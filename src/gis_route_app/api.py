@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import FastAPI, HTTPException
 
 from .config import get_settings
 from .models import RouteAnalysisResponse, RouteRequest
 from .routing import RoutingError
 from .service import RouteIntersectionService
-
-_DEFAULT_HIN_PATH = Path("data/hin.geojson")
-_DEFAULT_CIP_PATH = Path("data/cip.geojson")
 
 app = FastAPI(
     title="GIS Route Intersection API",
@@ -26,11 +21,7 @@ app = FastAPI(
 
 def _build_service() -> RouteIntersectionService:
     settings = get_settings()
-    return RouteIntersectionService.from_data_files(
-        settings=settings,
-        hin_path=_DEFAULT_HIN_PATH,
-        cip_path=_DEFAULT_CIP_PATH,
-    )
+    return RouteIntersectionService.from_settings(settings=settings)
 
 
 @app.get("/health")

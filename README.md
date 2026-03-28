@@ -27,7 +27,7 @@ The project includes both:
 - `src/gis_route_app/cli.py`  
   Command-line entrypoint
 - `data/hin.geojson`, `data/cip.geojson`  
-  Sample datasets
+  Sample local datasets (the app can also load datasets from HTTP GeoJSON URLs)
 
 ## Quickstart
 
@@ -53,6 +53,14 @@ Key variables:
 - `ROUTING_PROVIDER=mock` for local deterministic routes
 - `ROUTING_PROVIDER=ors` to use OpenRouteService API
 - `OPENROUTESERVICE_API_KEY=<your_key>` required when using `ors`
+- `HIN_DATA_SOURCE` accepts a local file path or HTTP GeoJSON URL
+- `CIP_DATA_SOURCE` accepts a local file path or HTTP GeoJSON URL (default is your ArcGIS endpoint)
+
+Default CIP source:
+
+```text
+https://services1.arcgis.com/k3vhq11XkBNeeOfM/arcgis/rest/services/FY23_CIP_Polygon_Layers/FeatureServer/0/query?where=1%3D1&outFields=*&f=geojson
+```
 
 ### 3) Run API
 
@@ -88,6 +96,17 @@ gis-route-cli \
   --pretty
 ```
 
+Override dataset sources at runtime (file path or URL):
+
+```bash
+gis-route-cli \
+  --start-lon -122.431 --start-lat 37.772 \
+  --end-lon -122.421 --end-lat 37.772 \
+  --mode biking \
+  --cip-source "https://services1.arcgis.com/k3vhq11XkBNeeOfM/arcgis/rest/services/FY23_CIP_Polygon_Layers/FeatureServer/0/query?where=1%3D1&outFields=*&f=geojson" \
+  --pretty
+```
+
 ## Intersection Output
 
 Each intersection includes:
@@ -106,9 +125,9 @@ pytest -q
 
 ## Extending Datasets
 
-Replace sample files:
+You can use either:
 
-- `data/hin.geojson`
-- `data/cip.geojson`
+- local files (`data/hin.geojson`, `data/cip.geojson`), or
+- remote HTTP GeoJSON APIs (for example ArcGIS REST query endpoints returning `f=geojson`).
 
-Expected format is GeoJSON `FeatureCollection` with line-based geometries (recommended for corridor/project overlap analysis).
+Expected format is GeoJSON `FeatureCollection`. Null-geometry features are skipped automatically.
