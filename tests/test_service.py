@@ -23,3 +23,5 @@ def test_service_analyze_with_sample_data() -> None:
     assert len(result.intersections) >= 1
     datasets = {item.dataset for item in result.intersections}
     assert datasets.issubset({"hin", "cip"})
+    for item in result.intersections:
+        assert 0.0 <= item.overlap_fraction_of_route <= 1.0
