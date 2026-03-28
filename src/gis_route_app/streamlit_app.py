@@ -32,6 +32,34 @@ class GeocodingError(RuntimeError):
     """Raised when address geocoding fails."""
 
 
+def _autocomplete_addresses(
+    query: str,
+    timeout_seconds: int,
+    limit: int = 5,
+) -> list[str]:
+    normalized_query = query.strip()
+    if len(normalized_query) < 3:
+        return []
+    try:
+        response = requests.get(
+            _NOMINATIM_URL,
+            params={"q": normalized_query, "format": "jsonv2", "limit": limit},
+            headers={"User-Agent": _GEOCODER_USER_AGENT},
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException:
+        return []
+
+    suggestions: list[str] = []
+    for item in payload:
+        display_name = item.get("display_name")
+        if isinstance(display_name, str) and display_name not in suggestions:
+            suggestions.append(display_name)
+    return suggestions
+
+
 def _geometry_length_m(geometry: BaseGeometry) -> float:
     if geometry.is_empty:
         return 0.0
@@ -189,6 +217,12 @@ def _geocode_address(address: str, timeout_seconds: int) -> Coordinate:
         raise GeocodingError(f"Unexpected geocoding response for '{query}'.") from exc
 
 
+def _resolve_selected_address(typed_value: str, selected_option: str) -> str:
+    if selected_option.startswith("Use typed address"):
+        return typed_value
+    return selected_option
+
+
 def _render_route_tab() -> None:
     st.subheader("GIS Route Intersection Analysis")
     st.caption("Set start/end addresses and evaluate route overlap with HIN/CIP datasets.")
@@ -202,35 +236,56 @@ def _render_route_tab() -> None:
             language="text",
         )
 
-    with st.form("route-form"):
-        c1, c2 = st.columns(2)
-        with c1:
-            start_address = st.text_input(
-                "Start address",
-                value="1 Market St, San Francisco, CA",
-            )
-            mode = st.selectbox("Travel mode", [m.value for m in TravelMode], index=0)
-        with c2:
-            end_address = st.text_input(
-                "End address",
-                value="Ferry Building, San Francisco, CA",
-            )
-            provider = st.selectbox(
-                "Routing provider",
-                options=["mock", "ors"],
-                index=0 if settings.routing_provider != "ors" else 1,
-            )
-        submitted = st.form_submit_button("Analyze route")
+    c1, c2 = st.columns(2)
+    with c1:
+        start_address = st.text_input(
+            "Start address",
+            value="1 Market St, San Francisco, CA",
+        )
+        start_suggestions = _autocomplete_addresses(
+            start_address,
+            timeout_seconds=settings.request_timeout_seconds,
+        )
+        start_selection = st.selectbox(
+            "Start address suggestions",
+            options=[f"Use typed address: {start_address}"] + start_suggestions,
+            help="Type at least 3 characters to get autocomplete suggestions.",
+        )
+        mode = st.selectbox("Travel mode", [m.value for m in TravelMode], index=0)
+
+    with c2:
+        end_address = st.text_input(
+            "End address",
+            value="Ferry Building, San Francisco, CA",
+        )
+        end_suggestions = _autocomplete_addresses(
+            end_address,
+            timeout_seconds=settings.request_timeout_seconds,
+        )
+        end_selection = st.selectbox(
+            "End address suggestions",
+            options=[f"Use typed address: {end_address}"] + end_suggestions,
+            help="Type at least 3 characters to get autocomplete suggestions.",
+        )
+        provider = st.selectbox(
+            "Routing provider",
+            options=["mock", "ors"],
+            index=0 if settings.routing_provider != "ors" else 1,
+        )
+
+    submitted = st.button("Analyze route")
 
     if not submitted:
-        st.info("Submit the form to run route analysis.")
+        st.info("Enter start/end addresses, choose suggestions if desired, then run analysis.")
         return
 
     settings = replace(settings, routing_provider=provider)
 
     try:
-        start_coord = _geocode_address(start_address, settings.request_timeout_seconds)
-        end_coord = _geocode_address(end_address, settings.request_timeout_seconds)
+        selected_start = _resolve_selected_address(start_address, start_selection)
+        selected_end = _resolve_selected_address(end_address, end_selection)
+        start_coord = _geocode_address(selected_start, settings.request_timeout_seconds)
+        end_coord = _geocode_address(selected_end, settings.request_timeout_seconds)
         service = RouteIntersectionService.from_settings(settings)
         request = RouteRequest(
             start=start_coord,
