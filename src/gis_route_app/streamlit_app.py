@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pandas as pd
+import pydeck as pdk
 import streamlit as st
 import streamlit.components.v1 as components
 from pyproj import Geod
@@ -80,6 +81,81 @@ def _build_percentage_series(
     )
 
 
+def _extract_paths_from_geometry(geometry: BaseGeometry) -> list[list[list[float]]]:
+    """Extract path arrays from line-based geometries for map rendering."""
+    if geometry.is_empty:
+        return []
+    if isinstance(geometry, LineString):
+        return [[[float(lon), float(lat)] for lon, lat in geometry.coords]]
+    if isinstance(geometry, MultiLineString):
+        return [
+            [[float(lon), float(lat)] for lon, lat in line.coords]
+            for line in geometry.geoms
+        ]
+    if isinstance(geometry, GeometryCollection):
+        paths: list[list[list[float]]] = []
+        for geom in geometry.geoms:
+            paths.extend(_extract_paths_from_geometry(geom))
+        return paths
+    return _extract_paths_from_geometry(geometry.boundary)
+
+
+def _render_route_map(result: RouteAnalysisResponse, request: RouteRequest) -> None:
+    route_geom = shape(result.route.geojson["geometry"])
+    paths = _extract_paths_from_geometry(route_geom)
+    if not paths:
+        st.warning("Route geometry could not be rendered on the map.")
+        return
+
+    route_data = [{"name": "Route", "path": path} for path in paths]
+    marker_data = [
+        {
+            "name": "Start",
+            "coordinates": [request.start.lon, request.start.lat],
+            "color": [34, 139, 34],
+        },
+        {
+            "name": "End",
+            "coordinates": [request.end.lon, request.end.lat],
+            "color": [220, 20, 60],
+        },
+    ]
+
+    center_lon = (request.start.lon + request.end.lon) / 2.0
+    center_lat = (request.start.lat + request.end.lat) / 2.0
+
+    deck = pdk.Deck(
+        initial_view_state=pdk.ViewState(
+            latitude=center_lat,
+            longitude=center_lon,
+            zoom=13,
+            pitch=0,
+        ),
+        layers=[
+            pdk.Layer(
+                "PathLayer",
+                route_data,
+                get_path="path",
+                get_color=[0, 112, 192],
+                width_scale=20,
+                width_min_pixels=3,
+                pickable=True,
+            ),
+            pdk.Layer(
+                "ScatterplotLayer",
+                marker_data,
+                get_position="coordinates",
+                get_fill_color="color",
+                get_radius=35,
+                pickable=True,
+            ),
+        ],
+        tooltip={"text": "{name}"},
+        map_style="light",
+    )
+    st.pydeck_chart(deck, use_container_width=True)
+
+
 def _render_route_tab() -> None:
     st.subheader("GIS Route Intersection Analysis")
     st.caption("Set start/end coordinates and evaluate route overlap with HIN/CIP datasets.")
@@ -142,6 +218,9 @@ def _render_route_tab() -> None:
         f"CIP {by_category['CIP overlap']:.1f}% | "
         f"No overlap {by_category['No overlap']:.1f}%"
     )
+
+    st.markdown("#### Route map")
+    _render_route_map(result, request)
 
     st.markdown("#### Route overlap percentages")
     st.line_chart(pct_frame.set_index("Category"))

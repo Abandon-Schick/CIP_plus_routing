@@ -119,6 +119,7 @@ Dashboard tabs:
   - percent of route intersecting **HIN**
   - percent of route intersecting **CIP**
   - percent of route intersecting **neither**
+  - a compact route map panel with start/end markers and route geometry
 
 Override dataset sources at runtime (file path or URL):
 
