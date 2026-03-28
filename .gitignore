@@ -3,3 +3,12 @@ node_modules/
 
 # Ignore environment variables
 .env
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+dist/
+build/

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gis-route-intersection"
+version = "0.1.0"
+description = "GIS routing and route intersection analysis for HIN and CIP datasets"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "pydantic>=2.8.0",
+  "pyproj>=3.6.0",
+  "python-dotenv>=1.0.1",
+  "requests>=2.32.0",
+  "shapely>=2.0.0",
+  "uvicorn[standard]>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27.0",
+  "pytest>=8.2.0",
+]
+
+[project.scripts]
+gis-route-cli = "gis_route_app.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
