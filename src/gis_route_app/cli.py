@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+from dataclasses import replace
 
 from .config import get_settings
 from .models import Coordinate, RouteRequest, TravelMode
@@ -29,8 +29,22 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=[mode.value for mode in TravelMode],
         default=TravelMode.DRIVING.value,
     )
-    parser.add_argument("--hin-path", type=str, default="data/hin.geojson")
-    parser.add_argument("--cip-path", type=str, default="data/cip.geojson")
+    parser.add_argument(
+        "--hin-path",
+        "--hin-source",
+        dest="hin_source",
+        type=str,
+        default=None,
+        help="HIN GeoJSON source (file path or HTTP URL). Defaults to HIN_DATA_SOURCE.",
+    )
+    parser.add_argument(
+        "--cip-path",
+        "--cip-source",
+        dest="cip_source",
+        type=str,
+        default=None,
+        help="CIP GeoJSON source (file path or HTTP URL). Defaults to CIP_DATA_SOURCE.",
+    )
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     return parser
 
@@ -40,11 +54,14 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    service = RouteIntersectionService.from_data_files(
-        settings=settings,
-        hin_path=Path(args.hin_path),
-        cip_path=Path(args.cip_path),
-    )
+    if args.hin_source or args.cip_source:
+        settings = replace(
+            settings,
+            hin_data_source=args.hin_source or settings.hin_data_source,
+            cip_data_source=args.cip_source or settings.cip_data_source,
+        )
+
+    service = RouteIntersectionService.from_settings(settings=settings)
 
     request = RouteRequest(
         start=Coordinate(lon=args.start_lon, lat=args.start_lat),

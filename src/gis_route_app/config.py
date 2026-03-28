@@ -18,6 +18,12 @@ class Settings:
     openrouteservice_api_key: str | None = None
     openrouteservice_base_url: str = "https://api.openrouteservice.org"
     request_timeout_seconds: int = 15
+    hin_data_source: str = "data/hin.geojson"
+    cip_data_source: str = (
+        "https://services1.arcgis.com/k3vhq11XkBNeeOfM/arcgis/rest/services/"
+        "FY23_CIP_Polygon_Layers/FeatureServer/0/query"
+        "?where=1%3D1&outFields=*&f=geojson"
+    )
 
 
 def get_settings() -> Settings:
@@ -32,4 +38,13 @@ def get_settings() -> Settings:
             "OPENROUTESERVICE_BASE_URL", "https://api.openrouteservice.org"
         ).rstrip("/"),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "15")),
+        hin_data_source=os.getenv("HIN_DATA_SOURCE", "data/hin.geojson"),
+        cip_data_source=os.getenv(
+            "CIP_DATA_SOURCE",
+            (
+                "https://services1.arcgis.com/k3vhq11XkBNeeOfM/arcgis/rest/services/"
+                "FY23_CIP_Polygon_Layers/FeatureServer/0/query"
+                "?where=1%3D1&outFields=*&f=geojson"
+            ),
+        ),
     )
