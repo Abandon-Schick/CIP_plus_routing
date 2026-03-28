@@ -26,10 +26,15 @@ NEAR_ME_URL = (
 _GEOD = Geod(ellps="WGS84")
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _GEOCODER_USER_AGENT = "gis-route-intersection-dashboard/0.1"
+_METERS_PER_MILE = 1609.344
 
 
 class GeocodingError(RuntimeError):
     """Raised when address geocoding fails."""
+
+
+def _meters_to_miles(distance_m: float) -> float:
+    return distance_m / _METERS_PER_MILE
 
 
 def _autocomplete_addresses(
@@ -297,13 +302,13 @@ def _render_route_tab() -> None:
         st.error(f"Could not analyze route: {exc}")
         return
 
-    route_km = result.route.distance_m / 1000.0
+    route_miles = _meters_to_miles(result.route.distance_m)
     duration_min = result.route.duration_s / 60.0
     pct_frame = _build_percentage_series(result, service)
     by_category = {row["Category"]: row["Percent"] for _, row in pct_frame.iterrows()}
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Route distance", f"{route_km:.2f} km")
+    m1.metric("Route distance", f"{route_miles:.2f} mi")
     m2.metric("Travel duration", f"{duration_min:.1f} min")
     m3.metric("Intersections found", str(len(result.intersections)))
     st.caption(
@@ -330,7 +335,7 @@ def _render_route_tab() -> None:
                 {
                     "dataset": i.dataset,
                     "feature_id": i.feature_id,
-                    "overlap_length_m": round(i.overlap_length_m, 3),
+                    "overlap_length_mi": round(_meters_to_miles(i.overlap_length_m), 3),
                     "overlap_fraction_of_route": round(i.overlap_fraction_of_route, 6),
                 }
                 for i in result.intersections
