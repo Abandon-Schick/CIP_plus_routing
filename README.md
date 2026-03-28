@@ -7,10 +7,13 @@ Python-based GIS application to:
   - **High Injury Network (HIN)** dataset
   - **Capital Improvement Projects (CIP)** dataset
 
-The project includes both:
+The project includes:
 
 - a **FastAPI service** (`/analyze-route`)
 - a **CLI tool** (`gis-route-cli`)
+- a **Streamlit dashboard** with:
+  - **Near me** tab (embedded ArcGIS Nearby app iframe)
+  - **Route intersection** tab (start/end controls + overlap chart)
 
 ## Architecture
 
@@ -95,6 +98,27 @@ gis-route-cli \
   --mode biking \
   --pretty
 ```
+
+### 5) Run Streamlit dashboard
+
+```bash
+streamlit run src/gis_route_app/streamlit_app.py
+```
+
+Or run with module mode:
+
+```bash
+python3 -m streamlit run src/gis_route_app/streamlit_app.py
+```
+
+Dashboard tabs:
+
+- **Near me**: embeds  
+  `https://www.arcgis.com/apps/instant/nearbybeta/index.html?appid=3990cecc7b0d42079d60b9aa3ad725e5&locale=en`
+- **Route intersection**: route input controls, summary metrics, and a line chart showing:
+  - percent of route intersecting **HIN**
+  - percent of route intersecting **CIP**
+  - percent of route intersecting **neither**
 
 Override dataset sources at runtime (file path or URL):
 
