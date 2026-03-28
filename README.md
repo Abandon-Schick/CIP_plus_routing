@@ -113,7 +113,7 @@ Dashboard tabs:
 
 - **Near me**: embeds  
   `https://www.arcgis.com/apps/instant/nearbybeta/index.html?appid=3990cecc7b0d42079d60b9aa3ad725e5&locale=en`
-- **Route intersection**: address-based route input controls with autocomplete suggestions, summary metrics (distance in miles), and a line chart showing:
+- **Route intersection**: address-based route input controls with conventional autocomplete (type address, optionally pick a suggested match), summary metrics (distance in miles), and a line chart showing:
   - percent of route intersecting **HIN**
   - percent of route intersecting **CIP**
   - percent of route intersecting **neither**
