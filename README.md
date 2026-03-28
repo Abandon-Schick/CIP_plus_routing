@@ -18,8 +18,7 @@ The project includes:
 ## Architecture
 
 - `src/gis_route_app/routing.py`  
-  Routing providers:
-  - `mock` provider for local development/tests
+  Routing provider:
   - `ors` provider (OpenRouteService)
 - `src/gis_route_app/analysis.py`  
   Spatial intersection engine using Shapely + geodesic length calculations
@@ -53,9 +52,8 @@ cp .env.example .env
 
 Key variables:
 
-- `ROUTING_PROVIDER=mock` for local deterministic routes
-- `ROUTING_PROVIDER=ors` to use OpenRouteService API
-- `OPENROUTESERVICE_API_KEY=<your_key>` required when using `ors`
+- `ROUTING_PROVIDER=ors` (required; only ORS is supported)
+- `OPENROUTESERVICE_API_KEY=<your_key>` required
 - `HIN_DATA_SOURCE` accepts a local file path or HTTP GeoJSON URL
 - `CIP_DATA_SOURCE` accepts a local file path or HTTP GeoJSON URL (default is your ArcGIS endpoint)
 

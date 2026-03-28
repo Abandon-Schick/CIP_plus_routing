@@ -233,6 +233,9 @@ def _render_route_tab() -> None:
     st.caption("Set start/end addresses and evaluate route overlap with HIN/CIP datasets.")
 
     settings = get_settings()
+    if settings.routing_provider != "ors":
+        st.warning("Only ORS routing is supported. Overriding ROUTING_PROVIDER to 'ors'.")
+        settings = replace(settings, routing_provider="ors")
     with st.expander("Data source settings", expanded=False):
         st.write("Current defaults loaded from environment:")
         st.code(
@@ -272,11 +275,6 @@ def _render_route_tab() -> None:
             options=[f"Use typed address: {end_address}"] + end_suggestions,
             help="Type at least 3 characters to get autocomplete suggestions.",
         )
-        provider = st.selectbox(
-            "Routing provider",
-            options=["mock", "ors"],
-            index=0 if settings.routing_provider != "ors" else 1,
-        )
 
     submitted = st.button("Analyze route")
 
@@ -284,7 +282,7 @@ def _render_route_tab() -> None:
         st.info("Enter start/end addresses, choose suggestions if desired, then run analysis.")
         return
 
-    settings = replace(settings, routing_provider=provider)
+    settings = replace(settings, routing_provider="ors")
 
     try:
         selected_start = _resolve_selected_address(start_address, start_selection)

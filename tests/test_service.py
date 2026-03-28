@@ -3,8 +3,37 @@ from gis_route_app.models import Coordinate, RouteRequest, TravelMode
 from gis_route_app.service import RouteIntersectionService
 
 
-def test_service_analyze_with_sample_data() -> None:
-    settings = Settings(routing_provider="mock")
+def test_service_analyze_with_sample_data(monkeypatch) -> None:
+    class DummyResponse:
+        ok = True
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[-122.431, 37.772], [-122.421, 37.772]],
+                        },
+                        "properties": {"summary": {"distance": 881.0, "duration": 220.0}},
+                    }
+                ],
+            }
+
+    def fake_post(url: str, json: dict, headers: dict, timeout: int):
+        assert "openrouteservice.org" in url
+        assert json["coordinates"] == [[-122.431, 37.772], [-122.421, 37.772]]
+        assert headers["Authorization"] == "test-key"
+        assert timeout == 15
+        return DummyResponse()
+
+    monkeypatch.setattr("gis_route_app.routing.requests.post", fake_post)
+
+    settings = Settings(routing_provider="ors", openrouteservice_api_key="test-key")
     service = RouteIntersectionService.from_data_files(
         settings=settings,
         hin_path="data/hin.geojson",

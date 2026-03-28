@@ -5,12 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import requests
-from pyproj import Geod
-from shapely.geometry import LineString
 
 from .models import Coordinate, RouteResponse, TravelMode
-
-_GEOD = Geod(ellps="WGS84")
 
 
 @dataclass(frozen=True)
@@ -31,38 +27,6 @@ class BaseRoutingProvider:
 
     def get_route(self, start: Coordinate, end: Coordinate, mode: TravelMode) -> RouteResponse:
         raise NotImplementedError
-
-
-class MockRoutingProvider(BaseRoutingProvider):
-    """Simple deterministic provider for local development and tests."""
-
-    _speed_mps = {
-        TravelMode.DRIVING: 13.9,  # ~50 km/h
-        TravelMode.WALKING: 1.4,  # ~5 km/h
-        TravelMode.BIKING: 4.8,  # ~17 km/h
-    }
-
-    def get_route(self, start: Coordinate, end: Coordinate, mode: TravelMode) -> RouteResponse:
-        line = LineString([(start.lon, start.lat), (end.lon, end.lat)])
-        # Use geodesic line length so route distance aligns with overlap calculations.
-        distance_m = _geodesic_line_length_m(line)
-        duration_s = distance_m / self._speed_mps[mode]
-
-        geojson = {
-            "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": list(line.coords)},
-            "properties": {"provider": "mock"},
-        }
-        return RouteResponse(mode=mode, distance_m=distance_m, duration_s=duration_s, geojson=geojson)
-
-
-def _geodesic_line_length_m(line: LineString) -> float:
-    coords = list(line.coords)
-    if len(coords) < 2:
-        return 0.0
-    lons = [coord[0] for coord in coords]
-    lats = [coord[1] for coord in coords]
-    return float(_GEOD.line_length(lons, lats))
 
 
 class OpenRouteServiceProvider(BaseRoutingProvider):
@@ -114,9 +78,10 @@ class OpenRouteServiceProvider(BaseRoutingProvider):
 
 
 def build_routing_provider(provider_name: str, context: RoutingContext) -> BaseRoutingProvider:
-    """Factory for supported routing providers."""
-    if provider_name == "mock":
-        return MockRoutingProvider()
+    """Factory for supported routing providers (ORS only)."""
     if provider_name == "ors":
         return OpenRouteServiceProvider(context)
-    raise RoutingError(f"Unsupported routing provider: {provider_name}")
+    raise RoutingError(
+        f"Unsupported routing provider: {provider_name}. "
+        "Only 'ors' is supported."
+    )
