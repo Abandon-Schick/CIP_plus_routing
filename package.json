@@ -1,0 +1,34 @@
+{
+  "name": "cip-plus-routing",
+  "version": "1.0.0",
+  "description": "Capital Improvement Projects Plus Routing System",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "jest --verbose",
+    "lint": "eslint src/ tests/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Abandon-Schick/CIP_plus_routing.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Abandon-Schick/CIP_plus_routing/issues"
+  },
+  "homepage": "https://github.com/Abandon-Schick/CIP_plus_routing#readme",
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "eslint": "^10.1.0",
+    "jest": "^30.3.0",
+    "nodemon": "^3.1.14",
+    "supertest": "^7.2.2"
+  }
+}
