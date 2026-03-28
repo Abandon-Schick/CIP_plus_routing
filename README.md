@@ -1,43 +1,114 @@
-# CIP Plus Routing
+# GIS Route Intersection Application
 
-Capital Improvement Projects Plus Routing System
+Python-based GIS application to:
 
-## Overview
-This project provides routing and management capabilities for capital improvement projects.
+- calculate **driving / walking / biking routes**
+- determine route intersections with:
+  - **High Injury Network (HIN)** dataset
+  - **Capital Improvement Projects (CIP)** dataset
 
-## Project Structure
-- `src/` - Source code files
-- `tests/` - Test suites and test data
-- `docs/` - Documentation and guides
-- `config/` - Configuration files
-- `.github/workflows/` - CI/CD workflows
+The project includes both:
 
-## Getting Started
+- a **FastAPI service** (`/analyze-route`)
+- a **CLI tool** (`gis-route-cli`)
 
-### Prerequisites
-- Git
-- Your preferred development environment
+## Architecture
 
-### Installation
-1. Clone the repository
-2. Review the documentation in `/docs`
-3. Set up your environment using the configuration files in `/config`
+- `src/gis_route_app/routing.py`  
+  Routing providers:
+  - `mock` provider for local development/tests
+  - `ors` provider (OpenRouteService)
+- `src/gis_route_app/analysis.py`  
+  Spatial intersection engine using Shapely + geodesic length calculations
+- `src/gis_route_app/service.py`  
+  Application service that composes routing + intersection logic
+- `src/gis_route_app/api.py`  
+  FastAPI endpoints
+- `src/gis_route_app/cli.py`  
+  Command-line entrypoint
+- `data/hin.geojson`, `data/cip.geojson`  
+  Sample datasets
 
-## Features
-- Project routing management
-- Capital improvement project tracking
-- Testing framework integration
+## Quickstart
 
-## Contributing
-1. Create a feature branch
-2. Make your changes
-3. Submit a pull request for review
+### 1) Create environment and install
 
-## Testing
-Run tests using the test framework configured in this project.
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -e ".[dev]"
+```
 
-## License
-MIT License
+### 2) Configure environment
 
-## Support
-For issues and questions, please open an issue on GitHub.
+Copy `.env.example` to `.env` and edit as needed:
+
+```bash
+cp .env.example .env
+```
+
+Key variables:
+
+- `ROUTING_PROVIDER=mock` for local deterministic routes
+- `ROUTING_PROVIDER=ors` to use OpenRouteService API
+- `OPENROUTESERVICE_API_KEY=<your_key>` required when using `ors`
+
+### 3) Run API
+
+```bash
+uvicorn gis_route_app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Health check:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Analyze route:
+
+```bash
+curl -X POST http://localhost:8000/analyze-route \
+  -H "Content-Type: application/json" \
+  -d '{
+    "start": {"lon": -122.431, "lat": 37.772},
+    "end": {"lon": -122.421, "lat": 37.772},
+    "mode": "biking"
+  }'
+```
+
+### 4) Run CLI
+
+```bash
+gis-route-cli \
+  --start-lon -122.431 --start-lat 37.772 \
+  --end-lon -122.421 --end-lat 37.772 \
+  --mode biking \
+  --pretty
+```
+
+## Intersection Output
+
+Each intersection includes:
+
+- `feature_id`
+- `dataset` (`hin` or `cip`)
+- `overlap_length_m`
+- `overlap_fraction_of_route`
+- source feature `properties`
+
+## Running Tests
+
+```bash
+pytest -q
+```
+
+## Extending Datasets
+
+Replace sample files:
+
+- `data/hin.geojson`
+- `data/cip.geojson`
+
+Expected format is GeoJSON `FeatureCollection` with line-based geometries (recommended for corridor/project overlap analysis).
