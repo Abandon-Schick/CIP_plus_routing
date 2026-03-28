@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import pandas as pd
 import pydeck as pdk
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from pyproj import Geod
@@ -23,6 +24,12 @@ NEAR_ME_URL = (
     "?appid=3990cecc7b0d42079d60b9aa3ad725e5&locale=en"
 )
 _GEOD = Geod(ellps="WGS84")
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_GEOCODER_USER_AGENT = "gis-route-intersection-dashboard/0.1"
+
+
+class GeocodingError(RuntimeError):
+    """Raised when address geocoding fails."""
 
 
 def _geometry_length_m(geometry: BaseGeometry) -> float:
@@ -156,9 +163,35 @@ def _render_route_map(result: RouteAnalysisResponse, request: RouteRequest) -> N
     st.pydeck_chart(deck, use_container_width=True)
 
 
+def _geocode_address(address: str, timeout_seconds: int) -> Coordinate:
+    query = address.strip()
+    if not query:
+        raise GeocodingError("Address cannot be empty.")
+    try:
+        response = requests.get(
+            _NOMINATIM_URL,
+            params={"q": query, "format": "jsonv2", "limit": 1},
+            headers={"User-Agent": _GEOCODER_USER_AGENT},
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        raise GeocodingError(f"Geocoding request failed for '{query}': {exc}") from exc
+
+    if not payload:
+        raise GeocodingError(f"No location found for address: '{query}'.")
+
+    first = payload[0]
+    try:
+        return Coordinate(lon=float(first["lon"]), lat=float(first["lat"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GeocodingError(f"Unexpected geocoding response for '{query}'.") from exc
+
+
 def _render_route_tab() -> None:
     st.subheader("GIS Route Intersection Analysis")
-    st.caption("Set start/end coordinates and evaluate route overlap with HIN/CIP datasets.")
+    st.caption("Set start/end addresses and evaluate route overlap with HIN/CIP datasets.")
 
     settings = get_settings()
     with st.expander("Data source settings", expanded=False):
@@ -172,12 +205,16 @@ def _render_route_tab() -> None:
     with st.form("route-form"):
         c1, c2 = st.columns(2)
         with c1:
-            start_lon = st.number_input("Start longitude", value=-122.431, format="%.6f")
-            start_lat = st.number_input("Start latitude", value=37.772, format="%.6f")
+            start_address = st.text_input(
+                "Start address",
+                value="1 Market St, San Francisco, CA",
+            )
             mode = st.selectbox("Travel mode", [m.value for m in TravelMode], index=0)
         with c2:
-            end_lon = st.number_input("End longitude", value=-122.421, format="%.6f")
-            end_lat = st.number_input("End latitude", value=37.772, format="%.6f")
+            end_address = st.text_input(
+                "End address",
+                value="Ferry Building, San Francisco, CA",
+            )
             provider = st.selectbox(
                 "Routing provider",
                 options=["mock", "ors"],
@@ -192,14 +229,16 @@ def _render_route_tab() -> None:
     settings = replace(settings, routing_provider=provider)
 
     try:
+        start_coord = _geocode_address(start_address, settings.request_timeout_seconds)
+        end_coord = _geocode_address(end_address, settings.request_timeout_seconds)
         service = RouteIntersectionService.from_settings(settings)
         request = RouteRequest(
-            start=Coordinate(lon=float(start_lon), lat=float(start_lat)),
-            end=Coordinate(lon=float(end_lon), lat=float(end_lat)),
+            start=start_coord,
+            end=end_coord,
             mode=TravelMode(mode),
         )
         result = service.analyze(request)
-    except (RoutingError, ValueError, FileNotFoundError) as exc:
+    except (GeocodingError, RoutingError, ValueError, FileNotFoundError) as exc:
         st.error(f"Could not analyze route: {exc}")
         return
 
@@ -212,6 +251,10 @@ def _render_route_tab() -> None:
     m1.metric("Route distance", f"{route_km:.2f} km")
     m2.metric("Travel duration", f"{duration_min:.1f} min")
     m3.metric("Intersections found", str(len(result.intersections)))
+    st.caption(
+        f"Resolved start: ({request.start.lat:.6f}, {request.start.lon:.6f}) | "
+        f"end: ({request.end.lat:.6f}, {request.end.lon:.6f})"
+    )
     st.caption(
         "Coverage split: "
         f"HIN {by_category['HIN overlap']:.1f}% | "
