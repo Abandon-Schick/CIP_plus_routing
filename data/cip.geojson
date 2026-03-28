@@ -1,0 +1,35 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "CIP-101",
+        "project_name": "Protected Bike Lanes",
+        "phase": "design"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-122.429, 37.772],
+          [-122.419, 37.772]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "CIP-102",
+        "project_name": "Pedestrian Safety Upgrades",
+        "phase": "construction"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-122.427, 37.769],
+          [-122.417, 37.769]
+        ]
+      }
+    }
+  ]
+}
