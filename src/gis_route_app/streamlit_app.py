@@ -223,7 +223,7 @@ def _geocode_address(address: str, timeout_seconds: int) -> Coordinate:
 
 
 def _resolve_selected_address(typed_value: str, selected_option: str) -> str:
-    if selected_option.startswith("Use typed address"):
+    if not selected_option:
         return typed_value
     return selected_option
 
@@ -255,10 +255,16 @@ def _render_route_tab() -> None:
             timeout_seconds=settings.request_timeout_seconds,
         )
         start_selection = st.selectbox(
-            "Start address suggestions",
-            options=[f"Use typed address: {start_address}"] + start_suggestions,
-            help="Type at least 3 characters to get autocomplete suggestions.",
+            "Suggested start matches",
+            options=[""] + start_suggestions,
+            format_func=lambda option: option or "No suggestion selected (use typed address)",
+            help=(
+                "Type at least 3 characters to load suggestions. "
+                "Pick one to autofill the most likely address."
+            ),
         )
+        if start_selection:
+            start_address = start_selection
         mode = st.selectbox("Travel mode", [m.value for m in TravelMode], index=0)
 
     with c2:
@@ -271,10 +277,16 @@ def _render_route_tab() -> None:
             timeout_seconds=settings.request_timeout_seconds,
         )
         end_selection = st.selectbox(
-            "End address suggestions",
-            options=[f"Use typed address: {end_address}"] + end_suggestions,
-            help="Type at least 3 characters to get autocomplete suggestions.",
+            "Suggested end matches",
+            options=[""] + end_suggestions,
+            format_func=lambda option: option or "No suggestion selected (use typed address)",
+            help=(
+                "Type at least 3 characters to load suggestions. "
+                "Pick one to autofill the most likely address."
+            ),
         )
+        if end_selection:
+            end_address = end_selection
 
     submitted = st.button("Analyze route")
 

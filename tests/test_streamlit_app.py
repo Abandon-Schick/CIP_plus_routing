@@ -74,9 +74,9 @@ def test_autocomplete_addresses_skips_short_queries() -> None:
     assert _autocomplete_addresses("ab", timeout_seconds=5) == []
 
 
-def test_resolve_selected_address_returns_typed_value_for_typed_option() -> None:
+def test_resolve_selected_address_returns_typed_value_when_no_selection() -> None:
     typed = "1 Market St, San Francisco, CA"
-    selected = f"Use typed address: {typed}"
+    selected = ""
     assert _resolve_selected_address(typed, selected) == typed
 
 
