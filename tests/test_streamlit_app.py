@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+from shapely.geometry import LineString
+
+from gis_route_app.datasets import DatasetFeature
 from gis_route_app.models import Coordinate
 from gis_route_app.streamlit_app import (
     GeocodingError,
     _autocomplete_addresses,
+    _dataset_feature_collection,
     _geocode_address,
     _resolve_selected_address,
 )
@@ -84,3 +88,20 @@ def test_resolve_selected_address_returns_selected_suggestion() -> None:
     typed = "Market"
     selected = "Market Street, San Francisco, California, United States"
     assert _resolve_selected_address(typed, selected) == selected
+
+
+def test_dataset_feature_collection_builds_geojson_payload() -> None:
+    features = [
+        DatasetFeature(
+            feature_id="HIN-1",
+            geometry=LineString([(-122.431, 37.772), (-122.421, 37.772)]),
+            properties={},
+        )
+    ]
+
+    payload = _dataset_feature_collection(features, dataset_label="hin")
+
+    assert payload["type"] == "FeatureCollection"
+    assert len(payload["features"]) == 1
+    assert payload["features"][0]["properties"]["name"] == "HIN"
+    assert payload["features"][0]["properties"]["feature_id"] == "HIN-1"

@@ -15,6 +15,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
 from gis_route_app.config import get_settings
+from gis_route_app.datasets import DatasetFeature
 from gis_route_app.models import Coordinate, RouteAnalysisResponse, RouteRequest, TravelMode
 from gis_route_app.routing import RoutingError
 from gis_route_app.service import RouteIntersectionService
@@ -140,12 +141,44 @@ def _extract_paths_from_geometry(geometry: BaseGeometry) -> list[list[list[float
     return _extract_paths_from_geometry(geometry.boundary)
 
 
-def _render_route_map(result: RouteAnalysisResponse, request: RouteRequest) -> None:
+def _dataset_feature_collection(
+    features: list[DatasetFeature],
+    dataset_label: str,
+) -> dict:
+    payload_features: list[dict] = []
+    for feature in features:
+        payload_features.append(
+            {
+                "type": "Feature",
+                "geometry": feature.geometry.__geo_interface__,
+                "properties": {
+                    "name": dataset_label.upper(),
+                    "feature_id": feature.feature_id,
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": payload_features}
+
+
+def _render_route_map(
+    result: RouteAnalysisResponse,
+    request: RouteRequest,
+    service: RouteIntersectionService,
+) -> None:
     route_geom = shape(result.route.geojson["geometry"])
     paths = _extract_paths_from_geometry(route_geom)
     if not paths:
         st.warning("Route geometry could not be rendered on the map.")
         return
+
+    hin_geojson = _dataset_feature_collection(
+        service.analysis_engine.hin_features,
+        dataset_label="hin",
+    )
+    cip_geojson = _dataset_feature_collection(
+        service.analysis_engine.cip_features,
+        dataset_label="cip",
+    )
 
     route_data = [{"name": "Route", "path": path} for path in paths]
     marker_data = [
@@ -173,6 +206,25 @@ def _render_route_map(result: RouteAnalysisResponse, request: RouteRequest) -> N
         ),
         layers=[
             pdk.Layer(
+                "GeoJsonLayer",
+                cip_geojson,
+                pickable=True,
+                stroked=True,
+                filled=True,
+                get_fill_color=[255, 140, 0, 70],
+                get_line_color=[255, 140, 0, 220],
+                line_width_min_pixels=1,
+            ),
+            pdk.Layer(
+                "GeoJsonLayer",
+                hin_geojson,
+                pickable=True,
+                stroked=True,
+                filled=False,
+                get_line_color=[214, 39, 40, 220],
+                line_width_min_pixels=2,
+            ),
+            pdk.Layer(
                 "PathLayer",
                 route_data,
                 get_path="path",
@@ -190,9 +242,10 @@ def _render_route_map(result: RouteAnalysisResponse, request: RouteRequest) -> N
                 pickable=True,
             ),
         ],
-        tooltip={"text": "{name}"},
+        tooltip={"text": "{name} {feature_id}"},
         map_style="light",
     )
+    st.caption("Map legend: Blue route, Red HIN features, Orange CIP features.")
     st.pydeck_chart(deck, use_container_width=True)
 
 
@@ -333,7 +386,7 @@ def _render_route_tab() -> None:
     )
 
     st.markdown("#### Route map")
-    _render_route_map(result, request)
+    _render_route_map(result, request, service)
 
     st.markdown("#### Route overlap percentages")
     st.line_chart(pct_frame.set_index("Category"))
