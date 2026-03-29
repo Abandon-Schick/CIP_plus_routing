@@ -450,13 +450,16 @@ def _swap_addresses(start_address: str, end_address: str) -> tuple[str, str]:
 
 
 def _resolve_ors_api_key(
-    typed_value: str,
-    default_value: str | None,
+    typed_value: str | None,
+    env_value: str | None,
 ) -> str | None:
+    if typed_value is None:
+        return (env_value or "").strip() or None
+
     normalized = typed_value.strip()
     if normalized:
         return normalized
-    return default_value
+    return None
 
 
 def _render_route_tab() -> None:
@@ -527,9 +530,12 @@ def _render_route_tab() -> None:
             options=["mock", "ors"],
             index=0 if settings.routing_provider != "ors" else 1,
         )
+        env_ors_key = settings.openrouteservice_api_key or ""
+        if "ors_api_key_input" not in st.session_state:
+            st.session_state["ors_api_key_input"] = env_ors_key
         ors_api_key_input = st.text_input(
             "ORS API key",
-            value=settings.openrouteservice_api_key or "",
+            key="ors_api_key_input",
             type="password",
             help=(
                 "Used only when routing provider is 'ors'. "
@@ -546,10 +552,7 @@ def _render_route_tab() -> None:
         )
         return
 
-    resolved_ors_api_key = _resolve_ors_api_key(
-        ors_api_key_input,
-        settings.openrouteservice_api_key,
-    )
+    resolved_ors_api_key = _resolve_ors_api_key(ors_api_key_input, None)
     settings = replace(
         settings,
         routing_provider=provider,
