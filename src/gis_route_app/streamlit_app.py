@@ -32,9 +32,9 @@ NEAR_ME_URL = (
 _GEOD = Geod(ellps="WGS84")
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _GEOCODER_USER_AGENT = "gis-route-intersection-dashboard/0.1"
-_DEFAULT_START_ADDRESS = "1 Market St, San Francisco, CA"
-_DEFAULT_END_ADDRESS = "Ferry Building, San Francisco, CA"
-_TYPED_ADDRESS_PREFIX = "Use typed address: "
+_DEFAULT_START_ADDRESS = "1717 East Cary Street, Shockoe Bottom, Richmond, VA"
+_DEFAULT_END_ADDRESS = "407 Cleveland St, Richmond, VA"
+_TYPED_ADDRESS_PREFIX = "Searched address: "
 
 
 class GeocodingError(RuntimeError):
