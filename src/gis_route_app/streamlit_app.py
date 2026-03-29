@@ -449,6 +449,16 @@ def _swap_addresses(start_address: str, end_address: str) -> tuple[str, str]:
     return end_address, start_address
 
 
+def _resolve_ors_api_key(
+    typed_value: str,
+    default_value: str | None,
+) -> str | None:
+    normalized = typed_value.strip()
+    if normalized:
+        return normalized
+    return default_value
+
+
 def _render_route_tab() -> None:
     st.subheader("GIS Route Intersection Analysis")
     st.caption("Set start/end addresses and evaluate route overlap with HIN/CIP datasets.")
@@ -517,6 +527,16 @@ def _render_route_tab() -> None:
             options=["mock", "ors"],
             index=0 if settings.routing_provider != "ors" else 1,
         )
+        ors_api_key_input = st.text_input(
+            "ORS API key",
+            value=settings.openrouteservice_api_key or "",
+            type="password",
+            help=(
+                "Used only when routing provider is 'ors'. "
+                "Overrides OPENROUTESERVICE_API_KEY for this analysis request."
+            ),
+            placeholder="Paste OpenRouteService API key",
+        )
 
     submitted = st.button("Analyze route")
 
@@ -526,7 +546,19 @@ def _render_route_tab() -> None:
         )
         return
 
-    settings = replace(settings, routing_provider=provider)
+    resolved_ors_api_key = _resolve_ors_api_key(
+        ors_api_key_input,
+        settings.openrouteservice_api_key,
+    )
+    settings = replace(
+        settings,
+        routing_provider=provider,
+        openrouteservice_api_key=resolved_ors_api_key,
+    )
+
+    if provider == "ors" and not settings.openrouteservice_api_key:
+        st.error("Routing provider 'ors' requires an ORS API key.")
+        return
 
     try:
         with st.spinner("Analyzing route and overlap details..."):
