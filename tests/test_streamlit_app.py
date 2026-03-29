@@ -13,6 +13,7 @@ from gis_route_app.streamlit_app import (
     GeocodingError,
     _autocomplete_addresses,
     _build_overlap_details_frame,
+    _build_route_overlap_segments,
     _geocode_address,
     _resolve_selected_address,
     _swap_addresses,
@@ -176,3 +177,65 @@ def test_build_overlap_details_frame_normalizes_and_sorts() -> None:
     assert frame["dataset"].tolist() == ["CIP", "HIN", "HIN"]
     assert frame["feature_id"].tolist() == ["CIP-1", "HIN-1", "HIN-2"]
     assert frame["overlap_percent"].tolist() == [8.33, 12.22, 5.56]
+
+
+def test_build_route_overlap_segments_no_overlap_returns_single_gray_segment() -> None:
+    route = RouteResponse(
+        mode=TravelMode.DRIVING,
+        distance_m=1000.0,
+        duration_s=60.0,
+        geojson={
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[-122.43, 37.77], [-122.42, 37.77]],
+            },
+            "properties": {},
+        },
+    )
+    result = RouteAnalysisResponse(route=route, intersections=[])
+    frame = _build_route_overlap_segments(result, overlap_geometries=[])
+
+    assert frame["segment_type"].tolist() == ["No overlap"]
+    assert frame["percent"].tolist() == [100.0]
+
+
+def test_build_route_overlap_segments_intersection_then_gap_then_intersection() -> None:
+    route = RouteResponse(
+        mode=TravelMode.BIKING,
+        distance_m=1000.0,
+        duration_s=120.0,
+        geojson={
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[0.0, 0.0], [3.0, 0.0]],
+            },
+            "properties": {},
+        },
+    )
+    result = RouteAnalysisResponse(route=route, intersections=[])
+    # Overlap pieces at [0.5, 1.0] and [2.0, 2.5] along the route.
+    overlap_geometries = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[0.5, 0.0], [1.0, 0.0]]},
+            "properties": {},
+        },
+        {
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[2.0, 0.0], [2.5, 0.0]]},
+            "properties": {},
+        },
+    ]
+    frame = _build_route_overlap_segments(result, overlap_geometries=overlap_geometries)
+
+    assert frame["segment_type"].tolist() == [
+        "No overlap",
+        "Overlap",
+        "No overlap",
+        "Overlap",
+        "No overlap",
+    ]
+    rounded = [round(v, 2) for v in frame["percent"].tolist()]
+    assert rounded == [16.67, 16.67, 33.33, 16.67, 16.67]

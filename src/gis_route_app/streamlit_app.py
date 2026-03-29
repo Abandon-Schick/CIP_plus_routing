@@ -10,7 +10,13 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from pyproj import Geod
-from shapely.geometry import GeometryCollection, LineString, MultiLineString, shape
+from shapely.geometry import (
+    GeometryCollection,
+    LineString,
+    MultiLineString,
+    Point,
+    shape,
+)
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
@@ -145,6 +151,186 @@ def _build_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values(
         by=["dataset", "overlap_length_m"],
         ascending=[True, False],
+    )
+
+
+def _extract_line_geometries(geometry: BaseGeometry) -> list[LineString]:
+    if geometry.is_empty:
+        return []
+    if isinstance(geometry, LineString):
+        return [geometry]
+    if isinstance(geometry, MultiLineString):
+        return [line for line in geometry.geoms if len(line.coords) >= 2]
+    if isinstance(geometry, GeometryCollection):
+        output: list[LineString] = []
+        for geom in geometry.geoms:
+            output.extend(_extract_line_geometries(geom))
+        return output
+    if geometry.geom_type in {"Polygon", "MultiPolygon"}:
+        return _extract_line_geometries(geometry.boundary)
+    return []
+
+
+def _merge_intervals(
+    intervals: list[tuple[float, float]],
+    tolerance: float = 1e-6,
+) -> list[tuple[float, float]]:
+    if not intervals:
+        return []
+    sorted_intervals = sorted(intervals, key=lambda i: i[0])
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted_intervals:
+        if not merged:
+            merged.append((start, end))
+            continue
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end + tolerance:
+            merged[-1] = (prev_start, max(prev_end, end))
+            continue
+        merged.append((start, end))
+    return merged
+
+
+def _build_line_overlap_intervals(
+    route_line: LineString,
+    overlap_union: BaseGeometry,
+) -> list[tuple[float, float]]:
+    line_length_m = _geometry_length_m(route_line)
+    if line_length_m <= 0 or overlap_union.is_empty:
+        return []
+
+    overlap_geom = route_line.intersection(overlap_union)
+    overlap_lines = _extract_line_geometries(overlap_geom)
+    intervals: list[tuple[float, float]] = []
+    for overlap_line in overlap_lines:
+        coords = list(overlap_line.coords)
+        if len(coords) < 2:
+            continue
+        start_norm = route_line.project(Point(coords[0]), normalized=True)
+        end_norm = route_line.project(Point(coords[-1]), normalized=True)
+        lo = max(0.0, min(start_norm, end_norm))
+        hi = min(1.0, max(start_norm, end_norm))
+        if hi <= lo:
+            continue
+        intervals.append((lo * line_length_m, hi * line_length_m))
+    return _merge_intervals(intervals)
+
+
+def _build_route_overlap_blocks(
+    route_geom: BaseGeometry,
+    overlap_union: BaseGeometry,
+) -> list[dict[str, float | str]]:
+    route_lines = _extract_line_geometries(route_geom)
+    total_length_m = float(sum(_geometry_length_m(line) for line in route_lines))
+    if total_length_m <= 0:
+        return [{"segment": "no_overlap", "fraction": 1.0}]
+
+    blocks: list[dict[str, float | str]] = []
+    for line in route_lines:
+        line_length_m = _geometry_length_m(line)
+        if line_length_m <= 0:
+            continue
+        overlap_intervals = _build_line_overlap_intervals(line, overlap_union)
+        cursor = 0.0
+        for start, end in overlap_intervals:
+            lo = max(0.0, min(start, line_length_m))
+            hi = max(0.0, min(end, line_length_m))
+            if hi <= lo:
+                continue
+            if lo > cursor:
+                blocks.append({"segment": "no_overlap", "length_m": lo - cursor})
+            blocks.append({"segment": "overlap", "length_m": hi - lo})
+            cursor = hi
+        if cursor < line_length_m:
+            blocks.append({"segment": "no_overlap", "length_m": line_length_m - cursor})
+
+    if not blocks:
+        return [{"segment": "no_overlap", "fraction": 1.0}]
+
+    merged: list[dict[str, float | str]] = []
+    for block in blocks:
+        length_m = float(block["length_m"])
+        if length_m <= 0:
+            continue
+        if merged and merged[-1]["segment"] == block["segment"]:
+            merged[-1]["length_m"] = float(merged[-1]["length_m"]) + length_m
+            continue
+        merged.append({"segment": block["segment"], "length_m": length_m})
+
+    output: list[dict[str, float | str]] = []
+    for block in merged:
+        output.append(
+            {
+                "segment": str(block["segment"]),
+                "fraction": float(block["length_m"]) / total_length_m,
+            }
+        )
+    return output
+
+
+def _build_route_overlap_segments(
+    result: RouteAnalysisResponse,
+    overlap_geometries: list[dict[str, object]],
+) -> pd.DataFrame:
+    route_geom = shape(result.route.geojson["geometry"])
+    overlap_shapes = [shape(feature["geometry"]) for feature in overlap_geometries]
+    overlap_union = unary_union(overlap_shapes) if overlap_shapes else GeometryCollection()
+    blocks = _build_route_overlap_blocks(route_geom, overlap_union)
+    return pd.DataFrame(
+        {
+            "segment_type": [
+                "Overlap" if str(block["segment"]) == "overlap" else "No overlap"
+                for block in blocks
+            ],
+            "percent": [float(block["fraction"]) * 100.0 for block in blocks],
+        }
+    )
+
+
+def _render_route_overlap_bar(
+    route_geom: BaseGeometry,
+    service: RouteIntersectionService,
+) -> None:
+    hin_union = unary_union([feature.geometry for feature in service.analysis_engine.hin_features])
+    cip_union = unary_union([feature.geometry for feature in service.analysis_engine.cip_features])
+    overlap_union = hin_union.union(cip_union)
+    blocks = _build_route_overlap_blocks(route_geom, overlap_union)
+
+    color_map = {"overlap": "#32CD32", "no_overlap": "#BDBDBD"}
+    segment_html = "".join(
+        (
+            f"<div style='height:100%; width:{max(float(block['fraction']) * 100.0, 0.0):.6f}%; "
+            f"background:{color_map.get(str(block['segment']), '#BDBDBD')};'></div>"
+        )
+        for block in blocks
+    )
+    overlap_pct = sum(
+        float(block["fraction"]) for block in blocks if str(block["segment"]) == "overlap"
+    ) * 100.0
+
+    st.markdown(
+        (
+            "<div style='width:100%;'>"
+            "<div style='width:100%; height:30px; display:flex; border-radius:4px; "
+            "overflow:hidden; border:1px solid #a6a6a6;'>"
+            f"{segment_html}"
+            "</div>"
+            "<div style='display:flex; justify-content:space-between; margin-top:4px; "
+            "font-size:0.85rem;'>"
+            "<span>Route start</span><span>Route end</span>"
+            "</div>"
+            "<div style='display:flex; gap:18px; margin-top:8px; font-size:0.85rem;'>"
+            "<span><span style='display:inline-block; width:12px; height:12px; "
+            "background:#32CD32; margin-right:6px; border:1px solid #999;'></span>"
+            "Overlap</span>"
+            "<span><span style='display:inline-block; width:12px; height:12px; "
+            "background:#BDBDBD; margin-right:6px; border:1px solid #999;'></span>"
+            "No overlap</span>"
+            f"<span>Total overlap: {overlap_pct:.1f}%</span>"
+            "</div>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
     )
 
 
@@ -385,8 +571,8 @@ def _render_route_tab() -> None:
     st.markdown("#### Route map")
     _render_route_map(result, request)
 
-    st.markdown("#### Route overlap percentages")
-    st.bar_chart(pct_frame.set_index("Category"))
+    st.markdown("#### Route overlap along route (start to end)")
+    _render_route_overlap_bar(route_geom=shape(result.route.geojson["geometry"]), service=service)
 
     st.markdown("#### Overlap details")
     st.dataframe(details_frame, use_container_width=True, hide_index=True)
