@@ -15,6 +15,7 @@ from gis_route_app.streamlit_app import (
     _build_overlap_details_frame,
     _build_route_overlap_segments,
     _geocode_address,
+    _resolve_ors_api_key,
     _resolve_selected_address,
     _swap_addresses,
     _typed_address_option,
@@ -104,6 +105,18 @@ def test_swap_addresses_swaps_values() -> None:
     swapped_start, swapped_end = _swap_addresses("start", "end")
     assert swapped_start == "end"
     assert swapped_end == "start"
+
+
+def test_resolve_ors_api_key_prefers_input_value() -> None:
+    assert _resolve_ors_api_key("typed-key", "env-key") == "typed-key"
+
+
+def test_resolve_ors_api_key_falls_back_to_settings_value() -> None:
+    assert _resolve_ors_api_key("   ", "env-key") == "env-key"
+
+
+def test_resolve_ors_api_key_returns_none_when_no_value() -> None:
+    assert _resolve_ors_api_key("   ", None) is None
 
 
 def test_build_overlap_details_frame_empty_intersections() -> None:
