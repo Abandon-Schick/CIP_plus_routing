@@ -26,6 +26,9 @@ NEAR_ME_URL = (
 _GEOD = Geod(ellps="WGS84")
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _GEOCODER_USER_AGENT = "gis-route-intersection-dashboard/0.1"
+_DEFAULT_START_ADDRESS = "1 Market St, San Francisco, CA"
+_DEFAULT_END_ADDRESS = "Ferry Building, San Francisco, CA"
+_TYPED_ADDRESS_PREFIX = "Use typed address: "
 
 
 class GeocodingError(RuntimeError):
@@ -113,6 +116,35 @@ def _build_percentage_series(
             "Category": ["HIN overlap", "CIP overlap", "No overlap"],
             "Percent": [max(hin_pct, 0.0), max(cip_pct, 0.0), max(none_pct, 0.0)],
         }
+    )
+
+
+def _build_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFrame:
+    rows = [
+        {
+            "dataset": intersection.dataset.upper(),
+            "feature_id": intersection.feature_id,
+            "overlap_length_m": round(intersection.overlap_length_m, 3),
+            "overlap_fraction_of_route": round(
+                intersection.overlap_fraction_of_route, 6
+            ),
+            "overlap_percent": round(intersection.overlap_fraction_of_route * 100.0, 2),
+        }
+        for intersection in result.intersections
+    ]
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "dataset",
+                "feature_id",
+                "overlap_length_m",
+                "overlap_fraction_of_route",
+                "overlap_percent",
+            ]
+        )
+    return pd.DataFrame(rows).sort_values(
+        by=["dataset", "overlap_length_m"],
+        ascending=[True, False],
     )
 
 
@@ -218,9 +250,17 @@ def _geocode_address(address: str, timeout_seconds: int) -> Coordinate:
 
 
 def _resolve_selected_address(typed_value: str, selected_option: str) -> str:
-    if selected_option.startswith("Use typed address"):
+    if selected_option.startswith(_TYPED_ADDRESS_PREFIX):
         return typed_value
     return selected_option
+
+
+def _typed_address_option(typed_value: str) -> str:
+    return f"{_TYPED_ADDRESS_PREFIX}{typed_value}"
+
+
+def _swap_addresses(start_address: str, end_address: str) -> tuple[str, str]:
+    return end_address, start_address
 
 
 def _render_route_tab() -> None:
@@ -236,11 +276,30 @@ def _render_route_tab() -> None:
             language="text",
         )
 
+    if "start_address_input" not in st.session_state:
+        st.session_state["start_address_input"] = _DEFAULT_START_ADDRESS
+    if "end_address_input" not in st.session_state:
+        st.session_state["end_address_input"] = _DEFAULT_END_ADDRESS
+
+    a1, a2, _ = st.columns([1, 1, 4])
+    with a1:
+        if st.button("Swap start/end"):
+            swapped_start, swapped_end = _swap_addresses(
+                st.session_state["start_address_input"],
+                st.session_state["end_address_input"],
+            )
+            st.session_state["start_address_input"] = swapped_start
+            st.session_state["end_address_input"] = swapped_end
+    with a2:
+        if st.button("Reset addresses"):
+            st.session_state["start_address_input"] = _DEFAULT_START_ADDRESS
+            st.session_state["end_address_input"] = _DEFAULT_END_ADDRESS
+
     c1, c2 = st.columns(2)
     with c1:
         start_address = st.text_input(
             "Start address",
-            value="1 Market St, San Francisco, CA",
+            key="start_address_input",
         )
         start_suggestions = _autocomplete_addresses(
             start_address,
@@ -248,7 +307,7 @@ def _render_route_tab() -> None:
         )
         start_selection = st.selectbox(
             "Start address suggestions",
-            options=[f"Use typed address: {start_address}"] + start_suggestions,
+            options=[_typed_address_option(start_address)] + start_suggestions,
             help="Type at least 3 characters to get autocomplete suggestions.",
         )
         mode = st.selectbox("Travel mode", [m.value for m in TravelMode], index=0)
@@ -256,7 +315,7 @@ def _render_route_tab() -> None:
     with c2:
         end_address = st.text_input(
             "End address",
-            value="Ferry Building, San Francisco, CA",
+            key="end_address_input",
         )
         end_suggestions = _autocomplete_addresses(
             end_address,
@@ -264,7 +323,7 @@ def _render_route_tab() -> None:
         )
         end_selection = st.selectbox(
             "End address suggestions",
-            options=[f"Use typed address: {end_address}"] + end_suggestions,
+            options=[_typed_address_option(end_address)] + end_suggestions,
             help="Type at least 3 characters to get autocomplete suggestions.",
         )
         provider = st.selectbox(
@@ -276,23 +335,26 @@ def _render_route_tab() -> None:
     submitted = st.button("Analyze route")
 
     if not submitted:
-        st.info("Enter start/end addresses, choose suggestions if desired, then run analysis.")
+        st.info(
+            "Enter start/end addresses, optionally swap/reset, then run analysis."
+        )
         return
 
     settings = replace(settings, routing_provider=provider)
 
     try:
-        selected_start = _resolve_selected_address(start_address, start_selection)
-        selected_end = _resolve_selected_address(end_address, end_selection)
-        start_coord = _geocode_address(selected_start, settings.request_timeout_seconds)
-        end_coord = _geocode_address(selected_end, settings.request_timeout_seconds)
-        service = RouteIntersectionService.from_settings(settings)
-        request = RouteRequest(
-            start=start_coord,
-            end=end_coord,
-            mode=TravelMode(mode),
-        )
-        result = service.analyze(request)
+        with st.spinner("Analyzing route and overlap details..."):
+            selected_start = _resolve_selected_address(start_address, start_selection)
+            selected_end = _resolve_selected_address(end_address, end_selection)
+            start_coord = _geocode_address(selected_start, settings.request_timeout_seconds)
+            end_coord = _geocode_address(selected_end, settings.request_timeout_seconds)
+            service = RouteIntersectionService.from_settings(settings)
+            request = RouteRequest(
+                start=start_coord,
+                end=end_coord,
+                mode=TravelMode(mode),
+            )
+            result = service.analyze(request)
     except (GeocodingError, RoutingError, ValueError, FileNotFoundError) as exc:
         st.error(f"Could not analyze route: {exc}")
         return
@@ -300,12 +362,15 @@ def _render_route_tab() -> None:
     route_km = result.route.distance_m / 1000.0
     duration_min = result.route.duration_s / 60.0
     pct_frame = _build_percentage_series(result, service)
+    details_frame = _build_overlap_details_frame(result)
     by_category = {row["Category"]: row["Percent"] for _, row in pct_frame.iterrows()}
+    any_overlap_pct = max(0.0, 100.0 - by_category["No overlap"])
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Route distance", f"{route_km:.2f} km")
     m2.metric("Travel duration", f"{duration_min:.1f} min")
     m3.metric("Intersections found", str(len(result.intersections)))
+    m4.metric("Any overlap", f"{any_overlap_pct:.1f}%")
     st.caption(
         f"Resolved start: ({request.start.lat:.6f}, {request.start.lon:.6f}) | "
         f"end: ({request.end.lat:.6f}, {request.end.lon:.6f})"
@@ -321,22 +386,15 @@ def _render_route_tab() -> None:
     _render_route_map(result, request)
 
     st.markdown("#### Route overlap percentages")
-    st.line_chart(pct_frame.set_index("Category"))
+    st.bar_chart(pct_frame.set_index("Category"))
 
     st.markdown("#### Overlap details")
-    st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "dataset": i.dataset,
-                    "feature_id": i.feature_id,
-                    "overlap_length_m": round(i.overlap_length_m, 3),
-                    "overlap_fraction_of_route": round(i.overlap_fraction_of_route, 6),
-                }
-                for i in result.intersections
-            ]
-        ),
-        use_container_width=True,
+    st.dataframe(details_frame, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download overlap details (CSV)",
+        data=details_frame.to_csv(index=False).encode("utf-8"),
+        file_name="route_overlap_details.csv",
+        mime="text/csv",
     )
 
 
