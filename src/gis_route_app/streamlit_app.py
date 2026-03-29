@@ -542,7 +542,7 @@ def _render_route_tab() -> None:
 
     if not submitted:
         st.info(
-            "Enter start/end addresses, optionally swap/reset, then run analysis."
+            "Enter start & end addresses. Then run the analysis."
         )
         return
 
@@ -600,11 +600,11 @@ def _render_route_tab() -> None:
         f"No overlap {by_category['No overlap']:.1f}%"
     )
 
-    st.markdown("#### Route map")
-    _render_route_map(result, request)
-
     st.markdown("#### Route overlap along route (start to end)")
     _render_route_overlap_bar(route_geom=shape(result.route.geojson["geometry"]), service=service)
+
+    st.markdown("#### Route map")
+    _render_route_map(result, request)
 
     st.markdown("#### Overlap details")
     st.dataframe(details_frame, use_container_width=True, hide_index=True)
@@ -618,13 +618,13 @@ def _render_route_tab() -> None:
 
 def main() -> None:
     """Run Streamlit dashboard."""
-    st.set_page_config(page_title="GIS Route Dashboard", layout="wide")
-    st.title("CIP + HIN GIS Dashboard")
+    st.set_page_config(page_title="Roadyway Repairs Along Route", layout="wide")
+    st.title("Roadyway Repairs Near You and Along Your Favorite Routes")
 
-    near_me_tab, route_tab = st.tabs(["Near me", "Route intersection"])
+    near_me_tab, route_tab = st.tabs(["Near me", "Along a route"])
 
     with near_me_tab:
-        st.subheader("Near me")
+        st.subheader("Set an address, a radius and find projects happening nearby")
         components.iframe(NEAR_ME_URL, height=900, scrolling=True)
 
     with route_tab:
