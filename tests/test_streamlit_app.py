@@ -12,7 +12,8 @@ from gis_route_app.models import (
 from gis_route_app.streamlit_app import (
     GeocodingError,
     _autocomplete_addresses,
-    _build_overlap_details_frame,
+    _build_cip_overlap_details_frame,
+    _build_hin_overlap_details_frame,
     _build_route_overlap_segments,
     _geocode_address,
     _resolve_ors_api_key,
@@ -189,7 +190,7 @@ def test_resolve_ors_api_key_blank_input_clears_env_fallback() -> None:
     assert _resolve_ors_api_key("   ", "env-key") is None
 
 
-def test_build_overlap_details_frame_empty_intersections() -> None:
+def test_build_cip_overlap_details_frame_empty_intersections() -> None:
     result = RouteAnalysisResponse(
         route=RouteResponse(
             mode=TravelMode.DRIVING,
@@ -206,10 +207,9 @@ def test_build_overlap_details_frame_empty_intersections() -> None:
         ),
         intersections=[],
     )
-    frame = _build_overlap_details_frame(result)
+    frame = _build_cip_overlap_details_frame(result)
     assert frame.empty
     assert list(frame.columns) == [
-        "Dataset",
         "Overlap Percent",
         "Name",
         "Category",
@@ -221,7 +221,7 @@ def test_build_overlap_details_frame_empty_intersections() -> None:
     ]
 
 
-def test_build_overlap_details_frame_normalizes_and_sorts() -> None:
+def test_build_cip_overlap_details_frame_normalizes_and_sorts() -> None:
     result = RouteAnalysisResponse(
         route=RouteResponse(
             mode=TravelMode.BIKING,
@@ -258,13 +258,10 @@ def test_build_overlap_details_frame_normalizes_and_sorts() -> None:
                 overlap_length_m=100.0,
                 overlap_fraction_of_route=0.0555555,
                 properties={
-                    "name": "Midlothian Segment",
-                    "Category": "HIN Corridor",
-                    "Description": "High injury network segment.",
-                    "Cost": "$0",
-                    "Phase": "N/A",
-                    "Status": "Published",
-                    "Completion": "Existing",
+                    "FullName": "Midlothian Tpke",
+                    "StreetType": "Artery",
+                    "Functional": "Principal Arterial",
+                    "PostedSpee": 35,
                 },
             ),
             SegmentIntersection(
@@ -273,20 +270,16 @@ def test_build_overlap_details_frame_normalizes_and_sorts() -> None:
                 overlap_length_m=220.0,
                 overlap_fraction_of_route=0.1222222,
                 properties={
-                    "name": "Walmsley Segment",
-                    "Category": "HIN Corridor",
-                    "Description": "Priority safety corridor.",
-                    "Cost": "$0",
-                    "Phase": "N/A",
-                    "Status": "Published",
-                    "Completion": "Existing",
+                    "FullName": "Walmsley Blvd",
+                    "StreetType": "Artery",
+                    "Functional": "Minor Arterial",
+                    "PostedSpee": 25,
                 },
             ),
         ],
     )
-    frame = _build_overlap_details_frame(result)
+    frame = _build_cip_overlap_details_frame(result)
     assert list(frame.columns) == [
-        "Dataset",
         "Overlap Percent",
         "Name",
         "Category",
@@ -296,13 +289,99 @@ def test_build_overlap_details_frame_normalizes_and_sorts() -> None:
         "Status",
         "Completion",
     ]
-    assert frame["Dataset"].tolist() == ["CIP", "HIN", "HIN"]
-    assert frame["Name"].tolist() == [
-        "Protected Bike Lanes",
-        "Walmsley Segment",
-        "Midlothian Segment",
+    assert frame["Name"].tolist() == ["Protected Bike Lanes"]
+    assert frame["Overlap Percent"].tolist() == [8.33]
+
+
+def test_build_hin_overlap_details_frame_empty_intersections() -> None:
+    result = RouteAnalysisResponse(
+        route=RouteResponse(
+            mode=TravelMode.DRIVING,
+            distance_m=1000.0,
+            duration_s=120.0,
+            geojson={
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-122.43, 37.77], [-122.42, 37.77]],
+                },
+                "properties": {},
+            },
+        ),
+        intersections=[],
+    )
+    frame = _build_hin_overlap_details_frame(result)
+    assert frame.empty
+    assert list(frame.columns) == [
+        "Overlap Percent",
+        "Name",
+        "Street Type",
+        "Functional",
+        "Posted Speed",
     ]
-    assert frame["Overlap Percent"].tolist() == [8.33, 12.22, 5.56]
+
+
+def test_build_hin_overlap_details_frame_normalizes_and_sorts() -> None:
+    result = RouteAnalysisResponse(
+        route=RouteResponse(
+            mode=TravelMode.BIKING,
+            distance_m=1800.0,
+            duration_s=420.0,
+            geojson={
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-122.43, 37.77], [-122.42, 37.77]],
+                },
+                "properties": {},
+            },
+        ),
+        intersections=[
+            SegmentIntersection(
+                feature_id="CIP-1",
+                dataset="cip",
+                overlap_length_m=150.0,
+                overlap_fraction_of_route=0.0833333,
+                properties={
+                    "project_name": "Protected Bike Lanes",
+                },
+            ),
+            SegmentIntersection(
+                feature_id="HIN-2",
+                dataset="hin",
+                overlap_length_m=100.0,
+                overlap_fraction_of_route=0.0555555,
+                properties={
+                    "FullName": "Midlothian Tpke",
+                    "StreetType": "Artery",
+                    "Functional": "Principal Arterial",
+                    "PostedSpee": 35,
+                },
+            ),
+            SegmentIntersection(
+                feature_id="HIN-1",
+                dataset="hin",
+                overlap_length_m=220.0,
+                overlap_fraction_of_route=0.1222222,
+                properties={
+                    "RouteName": "Walmsley Blvd",
+                    "StreetType": "Artery",
+                    "Functional": "Minor Arterial",
+                    "PostedSpee": 25,
+                },
+            ),
+        ],
+    )
+    frame = _build_hin_overlap_details_frame(result)
+    assert list(frame.columns) == [
+        "Overlap Percent",
+        "Name",
+        "Street Type",
+        "Functional",
+        "Posted Speed",
+    ]
+    assert frame["Name"].tolist() == ["Walmsley Blvd", "Midlothian Tpke"]
+    assert frame["Overlap Percent"].tolist() == [12.22, 5.56]
 
 
 def test_build_route_overlap_segments_no_overlap_returns_single_gray_segment() -> None:
