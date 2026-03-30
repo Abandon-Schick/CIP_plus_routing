@@ -681,12 +681,21 @@ def _render_route_tab() -> None:
     st.markdown("#### Route overlap along route (start to end)")
     _render_route_overlap_bar(route_geom=shape(result.route.geojson["geometry"]), service=service)
 
-    st.markdown("#### Overlap details")
-    st.dataframe(details_frame, use_container_width=True, hide_index=True)
+    st.markdown("#### CIP overlap details")
+    st.dataframe(cip_details_frame, use_container_width=True, hide_index=True)
     st.download_button(
-        "Download overlap details (CSV)",
-        data=details_frame.to_csv(index=False).encode("utf-8"),
-        file_name="route_overlap_details.csv",
+        "Download CIP overlap details (CSV)",
+        data=cip_details_frame.to_csv(index=False).encode("utf-8"),
+        file_name="cip_overlap_details.csv",
+        mime="text/csv",
+    )
+
+    st.markdown("#### HIN overlap details")
+    st.dataframe(hin_details_frame, use_container_width=True, hide_index=True)
+    st.download_button(
+        "Download HIN overlap details (CSV)",
+        data=hin_details_frame.to_csv(index=False).encode("utf-8"),
+        file_name="hin_overlap_details.csv",
         mime="text/csv",
     )
 
