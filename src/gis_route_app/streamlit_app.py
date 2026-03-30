@@ -618,8 +618,8 @@ def _render_route_tab() -> None:
 
 def main() -> None:
     """Run Streamlit dashboard."""
-    st.set_page_config(page_title="Roadyway Repairs Along Route", layout="wide")
-    st.title("Roadyway Repairs Near You and Along Your Favorite Routes")
+    st.set_page_config(page_title="Roadway Repairs Along Route", layout="wide")
+    st.title("Imagine the future for your favorite routes")
 
     near_me_tab, route_tab = st.tabs(["Near me", "Along a route"])
 
