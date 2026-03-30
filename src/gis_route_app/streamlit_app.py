@@ -19,7 +19,7 @@ from shapely.geometry import (
     shape,
 )
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import unary_union
+from shapely.ops import substring, unary_union
 
 from gis_route_app.analysis import union_dataset_corridors_wgs84
 from gis_route_app.config import get_settings
@@ -43,6 +43,20 @@ _GEOCODER_USER_AGENT = "gis-route-intersection-dashboard/0.1"
 _DEFAULT_START_ADDRESS = "1717 East Cary Street, Shockoe Bottom, Richmond, VA"
 _DEFAULT_END_ADDRESS = "407 Cleveland St, Richmond, VA"
 _TYPED_ADDRESS_PREFIX = "Searched address: "
+# Match Route Map GeoJsonLayer line colors (HIN orange, CIP purple).
+_BAR_COLOR_HIN = "#CC5500"
+_BAR_COLOR_CIP = "#500050"
+_BAR_COLOR_BOTH_GRADIENT = (
+    "repeating-linear-gradient(90deg, "
+    f"{_BAR_COLOR_HIN} 0px, {_BAR_COLOR_HIN} 4px, "
+    f"{_BAR_COLOR_CIP} 4px, {_BAR_COLOR_CIP} 8px)"
+)
+_BAR_COLOR_NO_OVERLAP = "#BDBDBD"
+# PathLayer RGBA (match GeoJsonLayer HIN / CIP line colors; gray = no overlap).
+_RGBA_ROUTE_HIN = [204, 85, 0, 255]
+_RGBA_ROUTE_CIP = [80, 0, 80, 255]
+_RGBA_ROUTE_NONE = [189, 189, 189, 255]
+_BOTH_ROUTE_STRIPE_CHUNK_M = 22.0
 
 
 class GeocodingError(RuntimeError):
@@ -205,10 +219,11 @@ def _merge_intervals(
     return merged
 
 
-def _build_line_overlap_intervals(
+def _line_metric_overlap_intervals(
     route_line: LineString,
     overlap_union: BaseGeometry,
 ) -> list[tuple[float, float]]:
+    """Sub-intervals of ``route_line`` (in meters from line start) covered by ``overlap_union``."""
     line_length_m = _geometry_length_m(route_line)
     if line_length_m <= 0 or overlap_union.is_empty:
         return []
@@ -228,6 +243,13 @@ def _build_line_overlap_intervals(
             continue
         intervals.append((lo * line_length_m, hi * line_length_m))
     return _merge_intervals(intervals)
+
+
+def _build_line_overlap_intervals(
+    route_line: LineString,
+    overlap_union: BaseGeometry,
+) -> list[tuple[float, float]]:
+    return _line_metric_overlap_intervals(route_line, overlap_union)
 
 
 def _build_route_overlap_blocks(
@@ -282,6 +304,171 @@ def _build_route_overlap_blocks(
     return output
 
 
+def _corridor_hin_cip_both_parts(
+    hin_corridor: BaseGeometry,
+    cip_corridor: BaseGeometry,
+) -> tuple[BaseGeometry, BaseGeometry, BaseGeometry]:
+    hin_only = hin_corridor.difference(cip_corridor)
+    cip_only = cip_corridor.difference(hin_corridor)
+    both = hin_corridor.intersection(cip_corridor)
+    return hin_only, cip_only, both
+
+
+def _merged_metric_spans_on_line(
+    line: LineString,
+    hin_only: BaseGeometry,
+    cip_only: BaseGeometry,
+    both: BaseGeometry,
+) -> list[tuple[float, float, str]]:
+    """Disjoint (start_m, end_m, tag) along ``line``; tag is hin|cip|both|no_overlap."""
+    line_length_m = _geometry_length_m(line)
+    if line_length_m <= 0:
+        return []
+    tol = 1e-6
+    tagged: list[tuple[float, float, str]] = []
+    for geom, tag in (
+        (hin_only, "hin"),
+        (cip_only, "cip"),
+        (both, "both"),
+    ):
+        for lo, hi in _line_metric_overlap_intervals(line, geom):
+            if hi > lo + tol:
+                tagged.append((lo, hi, tag))
+    tagged.sort(key=lambda t: t[0])
+
+    segs: list[tuple[float, float, str]] = []
+    cursor = 0.0
+    for lo, hi, tag in tagged:
+        lo = max(0.0, min(lo, line_length_m))
+        hi = max(0.0, min(hi, line_length_m))
+        if hi <= lo + tol:
+            continue
+        if lo > cursor + tol:
+            segs.append((cursor, lo, "no_overlap"))
+        segs.append((lo, hi, tag))
+        cursor = max(cursor, hi)
+    if cursor < line_length_m - tol:
+        segs.append((cursor, line_length_m, "no_overlap"))
+
+    merged: list[tuple[float, float, str]] = []
+    for lo, hi, seg in segs:
+        if hi <= lo + tol:
+            continue
+        if merged and merged[-1][2] == seg and abs(merged[-1][1] - lo) < 1e-3:
+            merged[-1] = (merged[-1][0], hi, seg)
+        else:
+            merged.append((lo, hi, seg))
+    return merged
+
+
+def _linestring_subpath_coords(
+    line: LineString,
+    start_m: float,
+    end_m: float,
+) -> list[list[float]]:
+    if end_m <= start_m + 1e-9:
+        return []
+    sub = substring(line, start_m, end_m, normalized=False)
+    if sub.is_empty:
+        return []
+    coords = list(sub.coords)
+    if len(coords) < 2:
+        return []
+    return [[float(x), float(y)] for x, y in coords]
+
+
+def _route_path_rows_colored(
+    route_geom: BaseGeometry,
+    hin_corridor: BaseGeometry,
+    cip_corridor: BaseGeometry,
+) -> list[dict[str, object]]:
+    """PathLayer rows: path (lon/lat) + RGBA color, aligned with overlap bar classification."""
+    hin_only, cip_only, both = _corridor_hin_cip_both_parts(hin_corridor, cip_corridor)
+    rows: list[dict[str, object]] = []
+    for line in _extract_line_geometries(route_geom):
+        for lo, hi, tag in _merged_metric_spans_on_line(line, hin_only, cip_only, both):
+            if tag == "both":
+                cur = lo
+                flip = True
+                while cur < hi - 1e-6:
+                    nxt = min(cur + _BOTH_ROUTE_STRIPE_CHUNK_M, hi)
+                    path = _linestring_subpath_coords(line, cur, nxt)
+                    if len(path) >= 2:
+                        rows.append(
+                            {
+                                "path": path,
+                                "color": _RGBA_ROUTE_HIN if flip else _RGBA_ROUTE_CIP,
+                            }
+                        )
+                    flip = not flip
+                    cur = nxt
+                continue
+            path = _linestring_subpath_coords(line, lo, hi)
+            if len(path) < 2:
+                continue
+            if tag == "hin":
+                color = _RGBA_ROUTE_HIN
+            elif tag == "cip":
+                color = _RGBA_ROUTE_CIP
+            else:
+                color = _RGBA_ROUTE_NONE
+            rows.append({"path": path, "color": color})
+    return rows
+
+
+def _merge_adjacent_segment_lengths(
+    pieces: list[tuple[float, str]],
+) -> list[tuple[float, str]]:
+    if not pieces:
+        return []
+    out: list[tuple[float, str]] = [pieces[0]]
+    for length_m, seg in pieces[1:]:
+        if length_m <= 0:
+            continue
+        prev_len, prev_seg = out[-1]
+        if seg == prev_seg:
+            out[-1] = (prev_len + length_m, prev_seg)
+        else:
+            out.append((length_m, seg))
+    return out
+
+
+def _build_typed_route_overlap_blocks(
+    route_geom: BaseGeometry,
+    hin_corridor: BaseGeometry,
+    cip_corridor: BaseGeometry,
+) -> list[dict[str, float | str]]:
+    """Partition route into hin-only, cip-only, both-corridors, and gap segments (matches map colors)."""
+    route_lines = _extract_line_geometries(route_geom)
+    total_length_m = float(sum(_geometry_length_m(line) for line in route_lines))
+    if total_length_m <= 0:
+        return [{"segment": "no_overlap", "fraction": 1.0}]
+
+    hin_only, cip_only, both = _corridor_hin_cip_both_parts(hin_corridor, cip_corridor)
+    raw_pieces: list[tuple[float, str]] = []
+    tol = 1e-6
+    for line in route_lines:
+        merged_line: list[tuple[float, str]] = []
+        for lo, hi, seg in _merged_metric_spans_on_line(line, hin_only, cip_only, both):
+            length = hi - lo
+            if length <= tol:
+                continue
+            if merged_line and merged_line[-1][1] == seg:
+                merged_line[-1] = (merged_line[-1][0] + length, seg)
+            else:
+                merged_line.append((length, seg))
+        raw_pieces.extend(merged_line)
+
+    merged_global = _merge_adjacent_segment_lengths(raw_pieces)
+    if not merged_global:
+        return [{"segment": "no_overlap", "fraction": 1.0}]
+    return [
+        {"segment": seg, "fraction": length_m / total_length_m}
+        for length_m, seg in merged_global
+        if length_m > tol
+    ]
+
+
 def _build_route_overlap_segments(
     result: RouteAnalysisResponse,
     overlap_geometries: list[dict[str, object]],
@@ -312,20 +499,32 @@ def _render_route_overlap_bar(
     cip_corridor = union_dataset_corridors_wgs84(
         service.analysis_engine.cip_features, prox, route_geom
     )
-    overlap_union = hin_corridor.union(cip_corridor)
-    blocks = _build_route_overlap_blocks(route_geom, overlap_union)
+    blocks = _build_typed_route_overlap_blocks(route_geom, hin_corridor, cip_corridor)
 
-    color_map = {"overlap": "#32CD32", "no_overlap": "#BDBDBD"}
+    def _bar_background(seg: str) -> str:
+        if seg == "hin":
+            return _BAR_COLOR_HIN
+        if seg == "cip":
+            return _BAR_COLOR_CIP
+        if seg == "both":
+            return _BAR_COLOR_BOTH_GRADIENT
+        return _BAR_COLOR_NO_OVERLAP
+
     segment_html = "".join(
         (
             f"<div style='height:100%; width:{max(float(block['fraction']) * 100.0, 0.0):.6f}%; "
-            f"background:{color_map.get(str(block['segment']), '#BDBDBD')};'></div>"
+            f"background:{_bar_background(str(block['segment']))};'></div>"
         )
         for block in blocks
     )
-    overlap_pct = sum(
-        float(block["fraction"]) for block in blocks if str(block["segment"]) == "overlap"
-    ) * 100.0
+    overlap_pct = (
+        sum(
+            float(block["fraction"])
+            for block in blocks
+            if str(block["segment"]) in {"hin", "cip", "both"}
+        )
+        * 100.0
+    )
 
     st.markdown(
         (
@@ -338,12 +537,19 @@ def _render_route_overlap_bar(
             "font-size:0.85rem;'>"
             "<span>Route start</span><span>Route end</span>"
             "</div>"
-            "<div style='display:flex; gap:18px; margin-top:8px; font-size:0.85rem;'>"
+            "<div style='display:flex; flex-wrap:wrap; gap:12px 18px; margin-top:8px; "
+            "font-size:0.85rem;'>"
             "<span><span style='display:inline-block; width:12px; height:12px; "
-            "background:#32CD32; margin-right:6px; border:1px solid #999;'></span>"
-            "Overlap</span>"
+            f"background:{_BAR_COLOR_HIN}; margin-right:6px; border:1px solid #999;'></span>"
+            "HIN overlap</span>"
             "<span><span style='display:inline-block; width:12px; height:12px; "
-            "background:#BDBDBD; margin-right:6px; border:1px solid #999;'></span>"
+            f"background:{_BAR_COLOR_CIP}; margin-right:6px; border:1px solid #999;'></span>"
+            "CIP overlap</span>"
+            "<span><span style='display:inline-block; width:12px; height:12px; "
+            f"background:{_BAR_COLOR_BOTH_GRADIENT}; margin-right:6px; border:1px solid #999;'></span>"
+            "Both</span>"
+            "<span><span style='display:inline-block; width:12px; height:12px; "
+            f"background:{_BAR_COLOR_NO_OVERLAP}; margin-right:6px; border:1px solid #999;'></span>"
             "No overlap</span>"
             f"<span>Total overlap: {overlap_pct:.1f}%</span>"
             "</div>"
@@ -429,7 +635,16 @@ def _render_route_map(
         st.warning("Route geometry could not be rendered on the map.")
         return
 
-    route_data = [{"name": "Route", "path": path} for path in paths]
+    prox = service.analysis_engine.proximity_buffer_m
+    hin_corridor = union_dataset_corridors_wgs84(
+        service.analysis_engine.hin_features, prox, route_geom
+    )
+    cip_corridor = union_dataset_corridors_wgs84(
+        service.analysis_engine.cip_features, prox, route_geom
+    )
+    route_path_rows = _route_path_rows_colored(route_geom, hin_corridor, cip_corridor)
+    if not route_path_rows:
+        route_path_rows = [{"path": path, "color": _RGBA_ROUTE_NONE} for path in paths]
     marker_data = [
         {
             "name": "Start",
@@ -478,9 +693,9 @@ def _render_route_map(
         [
             pdk.Layer(
                 "PathLayer",
-                route_data,
+                route_path_rows,
                 get_path="path",
-                get_color=[0, 112, 192],
+                get_color="color",
                 width_scale=20,
                 width_min_pixels=3,
                 pickable=True,
@@ -705,8 +920,9 @@ def _render_route_tab() -> None:
 
     st.markdown("#### Route map")
     st.caption(
-        "Orange: High Injury Network segments overlapping the route. "
-        "Purple: roadway (CIP) project geometries overlapping the route."
+        "Route line: orange = HIN corridor, purple = CIP corridor, gray = neither; "
+        "striped route segments = both. "
+        "Overlays: orange HIN and purple CIP geometries near the route."
     )
     _render_route_map(result, request, service)
 
