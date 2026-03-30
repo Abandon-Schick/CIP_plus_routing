@@ -85,6 +85,72 @@ def test_autocomplete_addresses_skips_short_queries() -> None:
     assert _autocomplete_addresses("ab", timeout_seconds=5) == []
 
 
+def test_autocomplete_addresses_returns_empty_on_invalid_json(monkeypatch) -> None:
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            raise ValueError("invalid json")
+
+    def fake_get(url: str, params: dict, headers: dict, timeout: int):
+        return DummyResponse()
+
+    monkeypatch.setattr("gis_route_app.streamlit_app.requests.get", fake_get)
+
+    assert _autocomplete_addresses("San Fran", timeout_seconds=5) == []
+
+
+def test_autocomplete_addresses_returns_empty_on_non_list_payload(monkeypatch) -> None:
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"display_name": "not a list"}
+
+    def fake_get(url: str, params: dict, headers: dict, timeout: int):
+        return DummyResponse()
+
+    monkeypatch.setattr("gis_route_app.streamlit_app.requests.get", fake_get)
+
+    assert _autocomplete_addresses("San Fran", timeout_seconds=5) == []
+
+
+def test_geocode_address_raises_on_invalid_json(monkeypatch) -> None:
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            raise ValueError("invalid json")
+
+    def fake_get(url: str, params: dict, headers: dict, timeout: int):
+        return DummyResponse()
+
+    monkeypatch.setattr("gis_route_app.streamlit_app.requests.get", fake_get)
+
+    with pytest.raises(GeocodingError, match="not valid JSON"):
+        _geocode_address("San Francisco", timeout_seconds=5)
+
+
+def test_geocode_address_raises_on_non_list_payload(monkeypatch) -> None:
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"lat": "37.7749", "lon": "-122.4194"}
+
+    def fake_get(url: str, params: dict, headers: dict, timeout: int):
+        return DummyResponse()
+
+    monkeypatch.setattr("gis_route_app.streamlit_app.requests.get", fake_get)
+
+    with pytest.raises(GeocodingError, match="Unexpected geocoding response"):
+        _geocode_address("San Francisco", timeout_seconds=5)
+
+
 def test_resolve_selected_address_returns_typed_value_for_typed_option() -> None:
     typed = "1 Market St, San Francisco, CA"
     selected = _typed_address_option(typed)
