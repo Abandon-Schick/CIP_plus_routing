@@ -1,0 +1,6 @@
+{
+  "port": 3000,
+  "database": "./production.db",
+  "debug": false,
+  "logLevel": "warn"
+}
