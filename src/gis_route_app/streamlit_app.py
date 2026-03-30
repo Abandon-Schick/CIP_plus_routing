@@ -125,9 +125,19 @@ def _build_percentage_series(
     )
 
 
-def _build_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFrame:
+def _pick_property(properties: dict[str, object], keys: list[str]) -> str:
+    for key in keys:
+        value = properties.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _build_cip_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFrame:
     columns = [
-        "Dataset",
         "Overlap Percent",
         "Name",
         "Category",
@@ -137,52 +147,81 @@ def _build_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFrame:
         "Status",
         "Completion",
     ]
-
-    def _pick(properties: dict[str, object], keys: list[str]) -> str:
-        for key in keys:
-            value = properties.get(key)
-            if value is None:
-                continue
-            text = str(value).strip()
-            if text:
-                return text
-        return ""
-
     rows = [
         {
-            "Dataset": intersection.dataset.upper(),
             "Overlap Percent": round(intersection.overlap_fraction_of_route * 100.0, 2),
-            "Name": _pick(
+            "Name": _pick_property(
                 intersection.properties,
-                ["project_name", "name", "Name", "title", "Title", "id", "ID"],
+                ["project_name", "ProjectName", "name", "Name", "title", "Title"],
             )
             or intersection.feature_id,
-            "Category": _pick(
+            "Category": _pick_property(
                 intersection.properties,
-                ["category", "Category", "kind", "type", "Type"],
+                ["category", "Category", "project_category", "kind", "type", "Type"],
             ),
-            "Description": _pick(
+            "Description": _pick_property(
                 intersection.properties,
                 ["description", "Description", "desc", "project_description"],
             ),
-            "Cost": _pick(
+            "Cost": _pick_property(
                 intersection.properties,
                 ["cost", "Cost", "budget", "Budget", "project_cost"],
             ),
-            "Phase": _pick(intersection.properties, ["phase", "Phase"]),
-            "Status": _pick(intersection.properties, ["status", "Status"]),
-            "Completion": _pick(
+            "Phase": _pick_property(intersection.properties, ["phase", "Phase"]),
+            "Status": _pick_property(intersection.properties, ["status", "Status"]),
+            "Completion": _pick_property(
                 intersection.properties,
                 ["completion", "Completion", "completion_date", "end_date"],
             ),
         }
         for intersection in result.intersections
+        if intersection.dataset == "cip"
     ]
     if not rows:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(rows, columns=columns).sort_values(
-        by=["Dataset", "Overlap Percent"],
-        ascending=[True, False],
+        by=["Overlap Percent", "Name"],
+        ascending=[False, True],
+    )
+
+
+def _build_hin_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFrame:
+    columns = [
+        "Overlap Percent",
+        "Name",
+        "Street Type",
+        "Functional",
+        "Posted Speed",
+    ]
+    rows = [
+        {
+            "Overlap Percent": round(intersection.overlap_fraction_of_route * 100.0, 2),
+            "Name": _pick_property(
+                intersection.properties,
+                ["FullName", "RouteName", "name", "Name", "title", "Title"],
+            )
+            or intersection.feature_id,
+            "Street Type": _pick_property(
+                intersection.properties,
+                ["StreetType", "street_type", "streetType", "Type", "type"],
+            ),
+            "Functional": _pick_property(
+                intersection.properties,
+                ["Functional", "functional"],
+            ),
+            "Posted Speed": _pick_property(
+                intersection.properties,
+                ["PostedSpee", "PostedSpeed", "posted_speed", "speed_limit"],
+            ),
+        }
+        for intersection in result.intersections
+        if intersection.dataset == "hin"
+    ]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows, columns=columns).sort_values(
+        by=["Overlap Percent", "Name"],
+        ascending=[False, True],
     )
 
 
