@@ -801,7 +801,7 @@ def _render_route_map(
         tooltip={"text": "{name}"},
         map_style="light",
     )
-    st.pydeck_chart(deck, use_container_width=True)
+    st.pydeck_chart(deck, width="stretch")
 
 
 def _geocode_address(address: str, timeout_seconds: int) -> Coordinate:
@@ -1010,7 +1010,7 @@ def _render_route_tab() -> None:
     _render_route_map(result, request, service)
 
     st.markdown("#### CIP overlap details")
-    st.dataframe(cip_details_frame, use_container_width=True, hide_index=True)
+    st.dataframe(cip_details_frame, width="stretch", hide_index=True)
     st.download_button(
         "Download CIP overlap details (CSV)",
         data=cip_details_frame.to_csv(index=False).encode("utf-8"),
@@ -1019,7 +1019,7 @@ def _render_route_tab() -> None:
     )
 
     st.markdown("#### HIN overlap details")
-    st.dataframe(hin_details_frame, use_container_width=True, hide_index=True)
+    st.dataframe(hin_details_frame, width="stretch", hide_index=True)
     st.download_button(
         "Download HIN overlap details (CSV)",
         data=hin_details_frame.to_csv(index=False).encode("utf-8"),
