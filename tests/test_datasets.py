@@ -116,8 +116,10 @@ def test_load_geojson_reprojects_web_mercator_when_crs_declared(tmp_path) -> Non
         assert abs(lon - ex_lon) < 1e-4
         assert abs(lat - ex_lat) < 1e-4
 
-    route = LineString([(-77.5235, 37.5015), (-77.5218, 37.5022)])
-    overlap = route.intersection(features[0].geometry)
+    hin_line = features[0].geometry
+    mid = hin_line.interpolate(0.5, normalized=True)
+    route = LineString([(mid.x - 0.02, mid.y), (mid.x + 0.02, mid.y)])
+    overlap = route.intersection(hin_line)
     assert not overlap.is_empty
 
 
