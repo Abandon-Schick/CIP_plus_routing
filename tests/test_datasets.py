@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 
+import requests
+from pyproj import Transformer
+from shapely.geometry import LineString, shape
+
 from gis_route_app.datasets import load_geojson_features
 
 
@@ -77,4 +81,64 @@ def test_load_geojson_features_from_http_url(monkeypatch) -> None:
 
     assert len(features) == 1
     assert features[0].feature_id == "CIP-REMOTE-1"
+
+
+def test_load_geojson_reprojects_web_mercator_when_crs_declared(tmp_path) -> None:
+    to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    lon_lat = [(-77.5229, 37.50195), (-77.5224, 37.50204)]
+    coords_3857 = [to_3857.transform(lon, lat) for lon, lat in lon_lat]
+
+    source = tmp_path / "hin_webmerc.geojson"
+    source.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "crs": {"type": "name", "properties": {"name": "EPSG:3857"}},
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"OBJECTID": 999},
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": coords_3857,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    features = load_geojson_features(source, fallback_prefix="hin")
+    assert len(features) == 1
+    loaded_coords = list(shape(features[0].geometry).coords)
+    for (lon, lat), (ex_lon, ex_lat) in zip(loaded_coords, lon_lat, strict=True):
+        assert abs(lon - ex_lon) < 1e-4
+        assert abs(lat - ex_lat) < 1e-4
+
+    route = LineString([(-77.5235, 37.5015), (-77.5218, 37.5022)])
+    overlap = route.intersection(features[0].geometry)
+    assert not overlap.is_empty
+
+
+def test_route_intersects_virginia_hin_api_geojson() -> None:
+    """Live check: default HIN URL overlaps real routes when reprojected (skipped if unreachable)."""
+    import pytest
+
+    url = (
+        "https://www.virginiaroads.org/api/download/v1/items/"
+        "2052af10bbc04cb88adf4fd87641bb65/geojson?layers=1"
+    )
+    try:
+        features = load_geojson_features(url, fallback_prefix="hin", timeout_seconds=60)
+    except (OSError, requests.RequestException):
+        pytest.skip("HIN API unreachable")
+    # Straight line along Midlothian Tpke area (Richmond) where HIN segments exist
+    route = LineString([(-77.53, 37.50), (-77.50, 37.51)])
+    any_overlap = False
+    for f in features:
+        if not route.intersection(f.geometry).is_empty:
+            any_overlap = True
+            break
+    assert any_overlap, "expected at least one HIN segment to intersect a corridor in the dataset"
 
