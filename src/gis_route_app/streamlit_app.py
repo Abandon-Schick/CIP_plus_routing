@@ -223,9 +223,12 @@ def _line_metric_overlap_intervals(
     route_line: LineString,
     overlap_union: BaseGeometry,
 ) -> list[tuple[float, float]]:
-    """Sub-intervals of ``route_line`` (in meters from line start) covered by ``overlap_union``."""
-    line_length_m = _geometry_length_m(route_line)
-    if line_length_m <= 0 or overlap_union.is_empty:
+    """Sub-intervals of ``route_line`` covered by ``overlap_union``, as normalized [0, 1] along the line.
+
+    Values are for ``shapely.ops.substring(..., normalized=True)`` (Shapely's native distance along
+    the line). Do not mix with geodesic meters — use substring + `_geometry_length_m` for lengths.
+    """
+    if _geometry_length_m(route_line) <= 0 or overlap_union.is_empty:
         return []
 
     overlap_geom = route_line.intersection(overlap_union)
@@ -241,7 +244,7 @@ def _line_metric_overlap_intervals(
         hi = min(1.0, max(start_norm, end_norm))
         if hi <= lo:
             continue
-        intervals.append((lo * line_length_m, hi * line_length_m))
+        intervals.append((lo, hi))
     return _merge_intervals(intervals)
 
 
@@ -267,18 +270,21 @@ def _build_route_overlap_blocks(
         if line_length_m <= 0:
             continue
         overlap_intervals = _build_line_overlap_intervals(line, overlap_union)
-        cursor = 0.0
-        for start, end in overlap_intervals:
-            lo = max(0.0, min(start, line_length_m))
-            hi = max(0.0, min(end, line_length_m))
-            if hi <= lo:
+        cursor_n = 0.0
+        for lo_n, hi_n in overlap_intervals:
+            lo_n = max(0.0, min(lo_n, 1.0))
+            hi_n = max(0.0, min(hi_n, 1.0))
+            if hi_n <= lo_n:
                 continue
-            if lo > cursor:
-                blocks.append({"segment": "no_overlap", "length_m": lo - cursor})
-            blocks.append({"segment": "overlap", "length_m": hi - lo})
-            cursor = hi
-        if cursor < line_length_m:
-            blocks.append({"segment": "no_overlap", "length_m": line_length_m - cursor})
+            if lo_n > cursor_n:
+                gap = substring(line, cursor_n, lo_n, normalized=True)
+                blocks.append({"segment": "no_overlap", "length_m": _geometry_length_m(gap)})
+            ov = substring(line, lo_n, hi_n, normalized=True)
+            blocks.append({"segment": "overlap", "length_m": _geometry_length_m(ov)})
+            cursor_n = hi_n
+        if cursor_n < 1.0:
+            tail = substring(line, cursor_n, 1.0, normalized=True)
+            blocks.append({"segment": "no_overlap", "length_m": _geometry_length_m(tail)})
 
     if not blocks:
         return [{"segment": "no_overlap", "fraction": 1.0}]
@@ -320,11 +326,10 @@ def _merged_metric_spans_on_line(
     cip_only: BaseGeometry,
     both: BaseGeometry,
 ) -> list[tuple[float, float, str]]:
-    """Disjoint (start_m, end_m, tag) along ``line``; tag is hin|cip|both|no_overlap."""
-    line_length_m = _geometry_length_m(line)
-    if line_length_m <= 0:
+    """Disjoint (start_norm, end_norm, tag) along ``line``; tag is hin|cip|both|no_overlap."""
+    if _geometry_length_m(line) <= 0:
         return []
-    tol = 1e-6
+    tol = 1e-9
     tagged: list[tuple[float, float, str]] = []
     for geom, tag in (
         (hin_only, "hin"),
@@ -339,22 +344,22 @@ def _merged_metric_spans_on_line(
     segs: list[tuple[float, float, str]] = []
     cursor = 0.0
     for lo, hi, tag in tagged:
-        lo = max(0.0, min(lo, line_length_m))
-        hi = max(0.0, min(hi, line_length_m))
+        lo = max(0.0, min(lo, 1.0))
+        hi = max(0.0, min(hi, 1.0))
         if hi <= lo + tol:
             continue
         if lo > cursor + tol:
             segs.append((cursor, lo, "no_overlap"))
         segs.append((lo, hi, tag))
         cursor = max(cursor, hi)
-    if cursor < line_length_m - tol:
-        segs.append((cursor, line_length_m, "no_overlap"))
+    if cursor < 1.0 - tol:
+        segs.append((cursor, 1.0, "no_overlap"))
 
     merged: list[tuple[float, float, str]] = []
     for lo, hi, seg in segs:
         if hi <= lo + tol:
             continue
-        if merged and merged[-1][2] == seg and abs(merged[-1][1] - lo) < 1e-3:
+        if merged and merged[-1][2] == seg and abs(merged[-1][1] - lo) < 1e-6:
             merged[-1] = (merged[-1][0], hi, seg)
         else:
             merged.append((lo, hi, seg))
@@ -363,12 +368,12 @@ def _merged_metric_spans_on_line(
 
 def _linestring_subpath_coords(
     line: LineString,
-    start_m: float,
-    end_m: float,
+    start_n: float,
+    end_n: float,
 ) -> list[list[float]]:
-    if end_m <= start_m + 1e-9:
+    if end_n <= start_n + 1e-12:
         return []
-    sub = substring(line, start_m, end_m, normalized=False)
+    sub = substring(line, start_n, end_n, normalized=True)
     if sub.is_empty:
         return []
     coords = list(sub.coords)
@@ -386,12 +391,14 @@ def _route_path_rows_colored(
     hin_only, cip_only, both = _corridor_hin_cip_both_parts(hin_corridor, cip_corridor)
     rows: list[dict[str, object]] = []
     for line in _extract_line_geometries(route_geom):
+        line_len_m = max(_geometry_length_m(line), 1e-9)
+        chunk_n = min(_BOTH_ROUTE_STRIPE_CHUNK_M / line_len_m, 1.0)
         for lo, hi, tag in _merged_metric_spans_on_line(line, hin_only, cip_only, both):
             if tag == "both":
                 cur = lo
                 flip = True
-                while cur < hi - 1e-6:
-                    nxt = min(cur + _BOTH_ROUTE_STRIPE_CHUNK_M, hi)
+                while cur < hi - 1e-12:
+                    nxt = min(cur + chunk_n, hi)
                     path = _linestring_subpath_coords(line, cur, nxt)
                     if len(path) >= 2:
                         rows.append(
@@ -450,7 +457,8 @@ def _build_typed_route_overlap_blocks(
     for line in route_lines:
         merged_line: list[tuple[float, str]] = []
         for lo, hi, seg in _merged_metric_spans_on_line(line, hin_only, cip_only, both):
-            length = hi - lo
+            span = substring(line, lo, hi, normalized=True)
+            length = _geometry_length_m(span)
             if length <= tol:
                 continue
             if merged_line and merged_line[-1][1] == seg:
