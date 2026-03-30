@@ -58,11 +58,16 @@ def _autocomplete_addresses(
         )
         response.raise_for_status()
         payload = response.json()
-    except requests.RequestException:
+    except (requests.RequestException, ValueError):
+        return []
+
+    if not isinstance(payload, list):
         return []
 
     suggestions: list[str] = []
     for item in payload:
+        if not isinstance(item, dict):
+            continue
         display_name = item.get("display_name")
         if isinstance(display_name, str) and display_name not in suggestions:
             suggestions.append(display_name)
@@ -421,14 +426,21 @@ def _geocode_address(address: str, timeout_seconds: int) -> Coordinate:
             timeout=timeout_seconds,
         )
         response.raise_for_status()
-        payload = response.json()
     except requests.RequestException as exc:
         raise GeocodingError(f"Geocoding request failed for '{query}': {exc}") from exc
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise GeocodingError(f"Geocoding response was not valid JSON for '{query}'.") from exc
 
+    if not isinstance(payload, list):
+        raise GeocodingError(f"Unexpected geocoding response for '{query}'.")
     if not payload:
         raise GeocodingError(f"No location found for address: '{query}'.")
 
     first = payload[0]
+    if not isinstance(first, dict):
+        raise GeocodingError(f"Unexpected geocoding response for '{query}'.")
     try:
         return Coordinate(lon=float(first["lon"]), lat=float(first["lat"]))
     except (KeyError, TypeError, ValueError) as exc:
