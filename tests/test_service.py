@@ -7,8 +7,8 @@ def test_service_analyze_with_sample_data() -> None:
     settings = Settings(routing_provider="mock")
     service = RouteIntersectionService.from_data_files(
         settings=settings,
-        hin_path="data/hin.geojson",
-        cip_path="data/cip.geojson",
+        hin_path="src/gis_route_app/HIN_UPDATE_2023.geojson",
+        cip_path="src/gis_route_app/FY23_CIP_Polygon_Layers.geojson",
     )
     req = RouteRequest(
         start=Coordinate(lon=-122.431, lat=37.772),
