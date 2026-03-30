@@ -18,12 +18,17 @@ class Settings:
     openrouteservice_api_key: str | None = None
     openrouteservice_base_url: str = "https://api.openrouteservice.org"
     request_timeout_seconds: int = 15
-    hin_data_source: str = "data/hin.geojson"
+    hin_data_source: str = (
+        "https://www.virginiaroads.org/api/download/v1/items/"
+        "2052af10bbc04cb88adf4fd87641bb65/geojson?layers=1"
+    )
     cip_data_source: str = (
         "https://services1.arcgis.com/k3vhq11XkBNeeOfM/arcgis/rest/services/"
         "FY23_CIP_Polygon_Layers/FeatureServer/0/query"
         "?where=1%3D1&outFields=*&f=geojson"
     )
+    # Meters; route–dataset matching uses a buffer of this width (see SpatialAnalysisEngine).
+    proximity_buffer_m: float = 50.0
 
 
 def get_settings() -> Settings:
@@ -38,7 +43,13 @@ def get_settings() -> Settings:
             "OPENROUTESERVICE_BASE_URL", "https://api.openrouteservice.org"
         ).rstrip("/"),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "15")),
-        hin_data_source=os.getenv("HIN_DATA_SOURCE", "data/hin.geojson"),
+        hin_data_source=os.getenv(
+            "HIN_DATA_SOURCE",
+            (
+                "https://www.virginiaroads.org/api/download/v1/items/"
+                "2052af10bbc04cb88adf4fd87641bb65/geojson?layers=1"
+            ),
+        ),
         cip_data_source=os.getenv(
             "CIP_DATA_SOURCE",
             (
@@ -46,5 +57,9 @@ def get_settings() -> Settings:
                 "FY23_CIP_Polygon_Layers/FeatureServer/0/query"
                 "?where=1%3D1&outFields=*&f=geojson"
             ),
+        ),
+        proximity_buffer_m=max(
+            0.0,
+            float(os.getenv("PROXIMITY_BUFFER_M", "50")),
         ),
     )
