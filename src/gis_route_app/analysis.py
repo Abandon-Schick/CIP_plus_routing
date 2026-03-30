@@ -21,7 +21,7 @@ class SpatialAnalysisEngine:
 
     hin_features: list[DatasetFeature]
     cip_features: list[DatasetFeature]
-    overlap_tolerance_m: float = 0.0
+    overlap_tolerance_m: float = 50.0
 
     def analyze_route(self, route_geojson: dict[str, Any]) -> list[SegmentIntersection]:
         """Return all non-zero overlaps for HIN and CIP datasets."""
