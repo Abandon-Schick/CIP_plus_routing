@@ -21,6 +21,7 @@ from shapely.geometry import (
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
+from gis_route_app.analysis import union_dataset_corridors_wgs84
 from gis_route_app.config import get_settings
 from gis_route_app.models import (
     Coordinate,
@@ -114,16 +115,17 @@ def _build_percentage_series(
             }
         )
 
-    hin_union = unary_union(
-        [feature.geometry for feature in service.analysis_engine.hin_features]
+    prox = service.analysis_engine.proximity_buffer_m
+    hin_corridor = union_dataset_corridors_wgs84(
+        service.analysis_engine.hin_features, prox, route_geom
     )
-    cip_union = unary_union(
-        [feature.geometry for feature in service.analysis_engine.cip_features]
+    cip_corridor = union_dataset_corridors_wgs84(
+        service.analysis_engine.cip_features, prox, route_geom
     )
 
-    hin_only = route_geom.intersection(hin_union).difference(cip_union)
-    cip_only = route_geom.intersection(cip_union).difference(hin_union)
-    none_overlap = route_geom.difference(hin_union.union(cip_union))
+    hin_only = route_geom.intersection(hin_corridor).difference(cip_corridor)
+    cip_only = route_geom.intersection(cip_corridor).difference(hin_corridor)
+    none_overlap = route_geom.difference(hin_corridor.union(cip_corridor))
 
     hin_pct = (_geometry_length_m(hin_only) / route_distance_m) * 100.0
     cip_pct = (_geometry_length_m(cip_only) / route_distance_m) * 100.0
@@ -303,9 +305,14 @@ def _render_route_overlap_bar(
     route_geom: BaseGeometry,
     service: RouteIntersectionService,
 ) -> None:
-    hin_union = unary_union([feature.geometry for feature in service.analysis_engine.hin_features])
-    cip_union = unary_union([feature.geometry for feature in service.analysis_engine.cip_features])
-    overlap_union = hin_union.union(cip_union)
+    prox = service.analysis_engine.proximity_buffer_m
+    hin_corridor = union_dataset_corridors_wgs84(
+        service.analysis_engine.hin_features, prox, route_geom
+    )
+    cip_corridor = union_dataset_corridors_wgs84(
+        service.analysis_engine.cip_features, prox, route_geom
+    )
+    overlap_union = hin_corridor.union(cip_corridor)
     blocks = _build_route_overlap_blocks(route_geom, overlap_union)
 
     color_map = {"overlap": "#32CD32", "no_overlap": "#BDBDBD"}
@@ -569,7 +576,8 @@ def _render_route_tab() -> None:
         st.write("Current defaults loaded from environment:")
         st.code(
             f"HIN_DATA_SOURCE={settings.hin_data_source}\n"
-            f"CIP_DATA_SOURCE={settings.cip_data_source}",
+            f"CIP_DATA_SOURCE={settings.cip_data_source}\n"
+            f"PROXIMITY_BUFFER_M={settings.proximity_buffer_m}",
             language="text",
         )
 
@@ -720,7 +728,7 @@ def main() -> None:
     near_me_tab, route_tab = st.tabs(["Near me", "Along a route"])
 
     with near_me_tab:
-        st.subheader("Find projects happening withing a radius")
+        st.subheader("Find projects happening within a radius")
         components.iframe(NEAR_ME_URL, height=900, scrolling=True)
 
     with route_tab:

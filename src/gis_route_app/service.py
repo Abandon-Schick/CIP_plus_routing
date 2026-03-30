@@ -36,7 +36,11 @@ class RouteIntersectionService:
             fallback_prefix="cip",
             timeout_seconds=settings.request_timeout_seconds,
         )
-        engine = SpatialAnalysisEngine(hin_features=hin_features, cip_features=cip_features)
+        engine = SpatialAnalysisEngine(
+            hin_features=hin_features,
+            cip_features=cip_features,
+            proximity_buffer_m=settings.proximity_buffer_m,
+        )
         return cls(settings=settings, analysis_engine=engine)
 
     @classmethod

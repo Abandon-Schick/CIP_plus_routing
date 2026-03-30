@@ -5,14 +5,67 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pyproj import Geod
+from pyproj import CRS, Geod, Transformer
 from shapely.geometry import GeometryCollection, LineString, MultiLineString, shape
 from shapely.geometry.base import BaseGeometry
+from shapely.ops import transform as shapely_transform, unary_union
 
 from .datasets import DatasetFeature
 from .models import SegmentIntersection
 
 _GEOD = Geod(ellps="WGS84")
+
+
+def _utm_crs_for_wgs84_point(lon: float, lat: float) -> CRS:
+    zone = min(max(int((lon + 180.0) // 6) + 1, 1), 60)
+    epsg = 32600 + zone if lat >= 0 else 32700 + zone
+    return CRS.from_epsg(epsg)
+
+
+def metric_transformers_for_geometry(route_geom: BaseGeometry) -> tuple[Transformer, Transformer]:
+    """WGS84 lon/lat ↔ metric UTM transformers anchored on route geometry."""
+    rep = route_geom.representative_point()
+    utm = _utm_crs_for_wgs84_point(rep.x, rep.y)
+    wgs = CRS.from_epsg(4326)
+    return (
+        Transformer.from_crs(wgs, utm, always_xy=True),
+        Transformer.from_crs(utm, wgs, always_xy=True),
+    )
+
+
+def union_dataset_corridors_wgs84(
+    features: list[DatasetFeature],
+    proximity_buffer_m: float,
+    route_geom: BaseGeometry,
+) -> BaseGeometry:
+    """Union of features expanded by ``proximity_buffer_m`` (meters), returned in WGS84."""
+    if not features:
+        return GeometryCollection()
+    if proximity_buffer_m <= 0.0:
+        return unary_union([f.geometry for f in features])
+
+    forward, inverse = metric_transformers_for_geometry(route_geom)
+    parts: list[BaseGeometry] = []
+    for f in features:
+        geom_m = shapely_transform(forward.transform, f.geometry)
+        parts.append(geom_m.buffer(proximity_buffer_m))
+    merged_m = unary_union(parts)
+    return shapely_transform(inverse.transform, merged_m)
+
+
+def _route_overlap_length_within_corridor_m(
+    route_geom: BaseGeometry,
+    feature_geom: BaseGeometry,
+    proximity_buffer_m: float,
+    forward: Transformer,
+    inverse: Transformer,
+) -> float:
+    """Length of route (geodesic, m) inside a metric buffer around the feature geometry."""
+    if proximity_buffer_m <= 0.0:
+        return _length_m(route_geom.intersection(feature_geom))
+    geom_m = shapely_transform(forward.transform, feature_geom)
+    corridor_wgs = shapely_transform(inverse.transform, geom_m.buffer(proximity_buffer_m))
+    return _length_m(route_geom.intersection(corridor_wgs))
 
 
 @dataclass(frozen=True)
@@ -21,15 +74,19 @@ class SpatialAnalysisEngine:
 
     hin_features: list[DatasetFeature]
     cip_features: list[DatasetFeature]
-    overlap_tolerance_m: float = 50.0
+    proximity_buffer_m: float = 50.0
+    """Count a dataset feature when the route comes within this many meters (buffer in metric CRS)."""
+    overlap_tolerance_m: float = 0.0
+    """Drop matches whose overlap length (after proximity) is at or below this many meters."""
 
     def analyze_route(self, route_geojson: dict[str, Any]) -> list[SegmentIntersection]:
-        """Return all non-zero overlaps for HIN and CIP datasets."""
+        """Return overlaps for HIN and CIP (includes near-misses within ``proximity_buffer_m``)."""
         route_geom = shape(route_geojson["geometry"])
         route_length_m = _length_m(route_geom)
         if route_length_m <= 0:
             return []
 
+        forward, inverse = metric_transformers_for_geometry(route_geom)
         matches: list[SegmentIntersection] = []
         matches.extend(
             self._collect_dataset_intersections(
@@ -37,6 +94,8 @@ class SpatialAnalysisEngine:
                 route_length_m=route_length_m,
                 features=self.hin_features,
                 dataset_name="hin",
+                forward=forward,
+                inverse=inverse,
             )
         )
         matches.extend(
@@ -45,6 +104,8 @@ class SpatialAnalysisEngine:
                 route_length_m=route_length_m,
                 features=self.cip_features,
                 dataset_name="cip",
+                forward=forward,
+                inverse=inverse,
             )
         )
         return matches
@@ -55,11 +116,18 @@ class SpatialAnalysisEngine:
         route_length_m: float,
         features: list[DatasetFeature],
         dataset_name: Literal["hin", "cip"],
+        forward: Transformer,
+        inverse: Transformer,
     ) -> list[SegmentIntersection]:
         output: list[SegmentIntersection] = []
         for feature in features:
-            overlap = route_geom.intersection(feature.geometry)
-            overlap_length_m = _length_m(overlap)
+            overlap_length_m = _route_overlap_length_within_corridor_m(
+                route_geom,
+                feature.geometry,
+                self.proximity_buffer_m,
+                forward,
+                inverse,
+            )
             if overlap_length_m <= self.overlap_tolerance_m:
                 continue
 
