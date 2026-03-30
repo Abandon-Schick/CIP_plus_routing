@@ -654,7 +654,8 @@ def _render_route_tab() -> None:
     route_km = result.route.distance_m / 1000.0
     duration_min = result.route.duration_s / 60.0
     pct_frame = _build_percentage_series(result, service)
-    details_frame = _build_overlap_details_frame(result)
+    cip_details_frame = _build_cip_overlap_details_frame(result)
+    hin_details_frame = _build_hin_overlap_details_frame(result)
     by_category = {row["Category"]: row["Percent"] for _, row in pct_frame.iterrows()}
     any_overlap_pct = max(0.0, 100.0 - by_category["No overlap"])
 
