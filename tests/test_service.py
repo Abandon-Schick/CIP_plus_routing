@@ -10,9 +10,11 @@ def test_service_analyze_with_sample_data() -> None:
         hin_path="data/hin.geojson",
         cip_path="data/cip.geojson",
     )
+    # Endpoints of a 2-vertex HIN segment (Broad Rock Blvd area) so mock straight-line routing
+    # lies exactly on the network and overlap exceeds the 50 m analysis threshold.
     req = RouteRequest(
-        start=Coordinate(lon=-122.431, lat=37.772),
-        end=Coordinate(lon=-122.421, lat=37.772),
+        start=Coordinate(lon=-77.487006716845002, lat=37.467975165527903),
+        end=Coordinate(lon=-77.486091456900496, lat=37.468371784651197),
         mode=TravelMode.BIKING,
     )
 

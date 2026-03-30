@@ -58,6 +58,7 @@ Key variables:
 - `OPENROUTESERVICE_API_KEY=<your_key>` required when using `ors`
 - `HIN_DATA_SOURCE` accepts a local file path or HTTP GeoJSON URL
 - `CIP_DATA_SOURCE` accepts a local file path or HTTP GeoJSON URL (default is your ArcGIS endpoint)
+- `PROXIMITY_BUFFER_M` (default `50`) — meters; route overlap with HIN/CIP is detected when the route lies within this distance of a feature (set to `0` for strict centerline intersection only)
 
 Default CIP source:
 
