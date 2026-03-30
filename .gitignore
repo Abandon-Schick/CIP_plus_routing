@@ -4,6 +4,12 @@ node_modules/
 # Ignore environment variables
 .env
 
+# Ignore database files
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
 # Python artifacts
 __pycache__/
 *.py[cod]
