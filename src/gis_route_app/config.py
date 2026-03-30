@@ -18,7 +18,10 @@ class Settings:
     openrouteservice_api_key: str | None = None
     openrouteservice_base_url: str = "https://api.openrouteservice.org"
     request_timeout_seconds: int = 15
-    hin_data_source: str = "src/gis_route_app/HIN_UPDATE_2023.geojson"
+    hin_data_source: str = (
+        "https://www.virginiaroads.org/api/download/v1/items/"
+        "2052af10bbc04cb88adf4fd87641bb65/geojson?layers=1"
+    )
     cip_data_source: str = (
         "https://services1.arcgis.com/k3vhq11XkBNeeOfM/arcgis/rest/services/"
         "FY23_CIP_Polygon_Layers/FeatureServer/0/query"
@@ -38,7 +41,13 @@ def get_settings() -> Settings:
             "OPENROUTESERVICE_BASE_URL", "https://api.openrouteservice.org"
         ).rstrip("/"),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "15")),
-        hin_data_source=os.getenv("HIN_DATA_SOURCE", "src/gis_route_app/HIN_UPDATE_2023.geojson"),
+        hin_data_source=os.getenv(
+            "HIN_DATA_SOURCE",
+            (
+                "https://www.virginiaroads.org/api/download/v1/items/"
+                "2052af10bbc04cb88adf4fd87641bb65/geojson?layers=1"
+            ),
+        ),
         cip_data_source=os.getenv(
             "CIP_DATA_SOURCE",
             (
