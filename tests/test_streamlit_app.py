@@ -177,12 +177,16 @@ def test_resolve_ors_api_key_prefers_input_value() -> None:
     assert _resolve_ors_api_key("typed-key", "env-key") == "typed-key"
 
 
-def test_resolve_ors_api_key_falls_back_to_settings_value() -> None:
-    assert _resolve_ors_api_key("   ", "env-key") == "env-key"
+def test_resolve_ors_api_key_uses_env_when_field_missing() -> None:
+    assert _resolve_ors_api_key(None, "env-key") == "env-key"
 
 
 def test_resolve_ors_api_key_returns_none_when_no_value() -> None:
     assert _resolve_ors_api_key("   ", None) is None
+
+
+def test_resolve_ors_api_key_blank_input_clears_env_fallback() -> None:
+    assert _resolve_ors_api_key("   ", "env-key") is None
 
 
 def test_build_overlap_details_frame_empty_intersections() -> None:
@@ -205,11 +209,15 @@ def test_build_overlap_details_frame_empty_intersections() -> None:
     frame = _build_overlap_details_frame(result)
     assert frame.empty
     assert list(frame.columns) == [
-        "dataset",
-        "feature_id",
-        "overlap_length_m",
-        "overlap_fraction_of_route",
-        "overlap_percent",
+        "Dataset",
+        "Overlap Percent",
+        "Name",
+        "Category",
+        "Description",
+        "Cost",
+        "Phase",
+        "Status",
+        "Completion",
     ]
 
 
@@ -234,28 +242,67 @@ def test_build_overlap_details_frame_normalizes_and_sorts() -> None:
                 dataset="cip",
                 overlap_length_m=150.0,
                 overlap_fraction_of_route=0.0833333,
-                properties={},
+                properties={
+                    "project_name": "Protected Bike Lanes",
+                    "category": "Mobility",
+                    "description": "Protected lanes expansion.",
+                    "cost": "$2.1M",
+                    "phase": "Design",
+                    "status": "Active",
+                    "completion": "Q4 2027",
+                },
             ),
             SegmentIntersection(
                 feature_id="HIN-2",
                 dataset="hin",
                 overlap_length_m=100.0,
                 overlap_fraction_of_route=0.0555555,
-                properties={},
+                properties={
+                    "name": "Midlothian Segment",
+                    "Category": "HIN Corridor",
+                    "Description": "High injury network segment.",
+                    "Cost": "$0",
+                    "Phase": "N/A",
+                    "Status": "Published",
+                    "Completion": "Existing",
+                },
             ),
             SegmentIntersection(
                 feature_id="HIN-1",
                 dataset="hin",
                 overlap_length_m=220.0,
                 overlap_fraction_of_route=0.1222222,
-                properties={},
+                properties={
+                    "name": "Walmsley Segment",
+                    "Category": "HIN Corridor",
+                    "Description": "Priority safety corridor.",
+                    "Cost": "$0",
+                    "Phase": "N/A",
+                    "Status": "Published",
+                    "Completion": "Existing",
+                },
             ),
         ],
     )
     frame = _build_overlap_details_frame(result)
-    assert frame["dataset"].tolist() == ["CIP", "HIN", "HIN"]
-    assert frame["feature_id"].tolist() == ["CIP-1", "HIN-1", "HIN-2"]
-    assert frame["overlap_percent"].tolist() == [8.33, 12.22, 5.56]
+    assert list(frame.columns) == [
+        "Dataset",
+        "Overlap Percent",
+        "Name",
+        "Category",
+        "Description",
+        "Cost",
+        "Phase",
+        "Status",
+        "Completion",
+    ]
+    assert frame["Dataset"].tolist() == ["CIP", "HIN", "HIN"]
+    assert frame["Name"].tolist() == [
+        "Protected Bike Lanes",
+        "Walmsley Segment",
+        "Midlothian Segment",
+    ]
+    assert frame["Overlap Percent"].tolist() == [8.33, 12.22, 5.56]
 
 
 def test_build_route_overlap_segments_no_overlap_returns_single_gray_segment() -> None:
