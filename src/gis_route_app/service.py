@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from pathlib import Path
 
 from .analysis import SpatialAnalysisEngine
@@ -19,6 +20,11 @@ class RouteIntersectionService:
     settings: Settings
     analysis_engine: SpatialAnalysisEngine
 
+    @staticmethod
+    def _is_http_source(source: str | Path) -> bool:
+        parsed = urlparse(str(source))
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
     @classmethod
     def from_data_files(
         cls,
@@ -26,11 +32,24 @@ class RouteIntersectionService:
         hin_path: str | Path,
         cip_path: str | Path,
     ) -> "RouteIntersectionService":
-        hin_features = load_geojson_features(
-            hin_path,
-            fallback_prefix="hin",
-            timeout_seconds=settings.request_timeout_seconds,
-        )
+        try:
+            hin_features = load_geojson_features(
+                hin_path,
+                fallback_prefix="hin",
+                timeout_seconds=settings.request_timeout_seconds,
+            )
+        except Exception:
+            if (
+                cls._is_http_source(hin_path)
+                and str(hin_path) != "data/hin.geojson"
+            ):
+                hin_features = load_geojson_features(
+                    "data/hin.geojson",
+                    fallback_prefix="hin",
+                    timeout_seconds=settings.request_timeout_seconds,
+                )
+            else:
+                raise
         cip_features = load_geojson_features(
             cip_path,
             fallback_prefix="cip",
