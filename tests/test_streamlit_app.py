@@ -164,7 +164,7 @@ def test_resolve_selected_address_returns_selected_suggestion() -> None:
 
 
 def test_typed_address_option_prefixes_typed_value() -> None:
-    assert _typed_address_option("abc") == "Use typed address: abc"
+    assert _typed_address_option("abc") == "Searched address: abc"
 
 
 def test_swap_addresses_swaps_values() -> None:

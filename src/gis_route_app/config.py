@@ -27,6 +27,8 @@ class Settings:
         "FY23_CIP_Polygon_Layers/FeatureServer/0/query"
         "?where=1%3D1&outFields=*&f=geojson"
     )
+    # Meters; route–dataset matching uses a buffer of this width (see SpatialAnalysisEngine).
+    proximity_buffer_m: float = 50.0
 
 
 def get_settings() -> Settings:
@@ -55,5 +57,9 @@ def get_settings() -> Settings:
                 "FY23_CIP_Polygon_Layers/FeatureServer/0/query"
                 "?where=1%3D1&outFields=*&f=geojson"
             ),
+        ),
+        proximity_buffer_m=max(
+            0.0,
+            float(os.getenv("PROXIMITY_BUFFER_M", "50")),
         ),
     )
