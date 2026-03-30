@@ -15,13 +15,20 @@ from shapely.geometry import (
     LineString,
     MultiLineString,
     Point,
+    mapping,
     shape,
 )
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
 from gis_route_app.config import get_settings
-from gis_route_app.models import Coordinate, RouteAnalysisResponse, RouteRequest, TravelMode
+from gis_route_app.models import (
+    Coordinate,
+    RouteAnalysisResponse,
+    RouteRequest,
+    SegmentIntersection,
+    TravelMode,
+)
 from gis_route_app.routing import RoutingError
 from gis_route_app.service import RouteIntersectionService
 
@@ -358,7 +365,57 @@ def _extract_paths_from_geometry(geometry: BaseGeometry) -> list[list[list[float
     return _extract_paths_from_geometry(geometry.boundary)
 
 
-def _render_route_map(result: RouteAnalysisResponse, request: RouteRequest) -> None:
+def _intersecting_hin_cip_geojson(
+    service: RouteIntersectionService,
+    intersections: list[SegmentIntersection],
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """Build FeatureCollections for HIN/CIP features that overlap the route (for map layers)."""
+    seen: set[tuple[str, str]] = set()
+    hin_features: list[dict[str, object]] = []
+    cip_features: list[dict[str, object]] = []
+    hin_by_id = {f.feature_id: f for f in service.analysis_engine.hin_features}
+    cip_by_id = {f.feature_id: f for f in service.analysis_engine.cip_features}
+
+    for inter in intersections:
+        key = (inter.dataset, inter.feature_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        if inter.dataset == "hin":
+            dataset_feat = hin_by_id.get(inter.feature_id)
+            target = hin_features
+            label = "HIN"
+        else:
+            dataset_feat = cip_by_id.get(inter.feature_id)
+            target = cip_features
+            label = "CIP"
+        if dataset_feat is None:
+            continue
+        props = {
+            **dataset_feat.properties,
+            "name": f"{label} · {inter.feature_id}",
+        }
+        target.append(
+            {
+                "type": "Feature",
+                "geometry": mapping(dataset_feat.geometry),
+                "properties": props,
+            }
+        )
+
+    def _fc(features: list[dict[str, object]]) -> dict[str, object] | None:
+        if not features:
+            return None
+        return {"type": "FeatureCollection", "features": features}
+
+    return _fc(hin_features), _fc(cip_features)
+
+
+def _render_route_map(
+    result: RouteAnalysisResponse,
+    request: RouteRequest,
+    service: RouteIntersectionService,
+) -> None:
     route_geom = shape(result.route.geojson["geometry"])
     paths = _extract_paths_from_geometry(route_geom)
     if not paths:
@@ -382,14 +439,36 @@ def _render_route_map(result: RouteAnalysisResponse, request: RouteRequest) -> N
     center_lon = (request.start.lon + request.end.lon) / 2.0
     center_lat = (request.start.lat + request.end.lat) / 2.0
 
-    deck = pdk.Deck(
-        initial_view_state=pdk.ViewState(
-            latitude=center_lat,
-            longitude=center_lon,
-            zoom=13,
-            pitch=0,
-        ),
-        layers=[
+    hin_fc, cip_fc = _intersecting_hin_cip_geojson(service, result.intersections)
+    layers: list[pdk.Layer] = []
+    if hin_fc is not None:
+        layers.append(
+            pdk.Layer(
+                "GeoJsonLayer",
+                hin_fc,
+                stroked=True,
+                filled=True,
+                get_fill_color=[255, 140, 0, 90],
+                get_line_color=[204, 85, 0, 255],
+                line_width_min_pixels=2,
+                pickable=True,
+            )
+        )
+    if cip_fc is not None:
+        layers.append(
+            pdk.Layer(
+                "GeoJsonLayer",
+                cip_fc,
+                stroked=True,
+                filled=True,
+                get_fill_color=[128, 0, 128, 90],
+                get_line_color=[80, 0, 80, 255],
+                line_width_min_pixels=2,
+                pickable=True,
+            )
+        )
+    layers.extend(
+        [
             pdk.Layer(
                 "PathLayer",
                 route_data,
@@ -407,7 +486,17 @@ def _render_route_map(result: RouteAnalysisResponse, request: RouteRequest) -> N
                 get_radius=35,
                 pickable=True,
             ),
-        ],
+        ]
+    )
+
+    deck = pdk.Deck(
+        initial_view_state=pdk.ViewState(
+            latitude=center_lat,
+            longitude=center_lon,
+            zoom=13,
+            pitch=0,
+        ),
+        layers=layers,
         tooltip={"text": "{name}"},
         map_style="light",
     )
@@ -589,34 +678,29 @@ def _render_route_tab() -> None:
         st.error(f"Could not analyze route: {exc}")
         return
 
-    route_km = result.route.distance_m / 1000.0
+    route_km = result.route.distance_m / 1609.3
     duration_min = result.route.duration_s / 60.0
     pct_frame = _build_percentage_series(result, service)
     details_frame = _build_overlap_details_frame(result)
     by_category = {row["Category"]: row["Percent"] for _, row in pct_frame.iterrows()}
     any_overlap_pct = max(0.0, 100.0 - by_category["No overlap"])
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Route distance", f"{route_km:.2f} km")
-    m2.metric("Travel duration", f"{duration_min:.1f} min")
-    m3.metric("Intersections found", str(len(result.intersections)))
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Route distance", f"{route_km:.2f} miles")
+    m2.metric("Roadway Projects", f"{by_category['CIP overlap']:.1f}%")
+    m3.metric("High Injury Network", f"{by_category['HIN overlap']:.1f}%")
     m4.metric("Any overlap", f"{any_overlap_pct:.1f}%")
-    st.caption(
-        f"Resolved start: ({request.start.lat:.6f}, {request.start.lon:.6f}) | "
-        f"end: ({request.end.lat:.6f}, {request.end.lon:.6f})"
-    )
-    st.caption(
-        "Coverage split: "
-        f"HIN {by_category['HIN overlap']:.1f}% | "
-        f"CIP {by_category['CIP overlap']:.1f}% | "
-        f"No overlap {by_category['No overlap']:.1f}%"
-    )
+    m5.metric("No overlap", f"{by_category['No overlap']:.1f}%")
 
-    st.markdown("#### Route overlap along route (start to end)")
+    st.markdown("#### Overlaps along route (start to end)")
     _render_route_overlap_bar(route_geom=shape(result.route.geojson["geometry"]), service=service)
 
     st.markdown("#### Route map")
-    _render_route_map(result, request)
+    st.caption(
+        "Orange: High Injury Network segments overlapping the route. "
+        "Purple: roadway (CIP) project geometries overlapping the route."
+    )
+    _render_route_map(result, request, service)
 
     st.markdown("#### Overlap details")
     st.dataframe(details_frame, use_container_width=True, hide_index=True)
@@ -636,7 +720,7 @@ def main() -> None:
     near_me_tab, route_tab = st.tabs(["Near me", "Along a route"])
 
     with near_me_tab:
-        st.subheader("Set an address, a radius and find projects happening nearby")
+        st.subheader("Find projects happening withing a radius")
         components.iframe(NEAR_ME_URL, height=900, scrolling=True)
 
     with route_tab:
