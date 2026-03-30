@@ -78,3 +78,76 @@ def test_load_geojson_features_from_http_url(monkeypatch) -> None:
     assert len(features) == 1
     assert features[0].feature_id == "CIP-REMOTE-1"
 
+
+def test_load_geojson_features_retries_pending_http_payload(monkeypatch) -> None:
+    class DummyResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return self._payload
+
+    pending_payload = {"status": "Pending", "message": "building"}
+    ready_payload = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"id": "HIN-READY-1"},
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-122.431, 37.772], [-122.421, 37.772]],
+                },
+            }
+        ],
+    }
+
+    calls = {"count": 0}
+
+    def fake_get(url: str, timeout: int):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            return DummyResponse(pending_payload)
+        return DummyResponse(ready_payload)
+
+    monkeypatch.setattr("gis_route_app.datasets.requests.get", fake_get)
+    monkeypatch.setattr("gis_route_app.datasets.time.sleep", lambda *_args, **_kwargs: None)
+
+    features = load_geojson_features(
+        "https://www.virginiaroads.org/api/download/v1/items/x/geojson?layers=1",
+        fallback_prefix="hin",
+        timeout_seconds=15,
+    )
+
+    assert calls["count"] == 3
+    assert len(features) == 1
+    assert features[0].feature_id == "HIN-READY-1"
+
+
+def test_load_geojson_features_raises_after_pending_retries(monkeypatch) -> None:
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"status": "Pending", "message": "still building"}
+
+    def fake_get(url: str, timeout: int):
+        return DummyResponse()
+
+    monkeypatch.setattr("gis_route_app.datasets.requests.get", fake_get)
+    monkeypatch.setattr("gis_route_app.datasets.time.sleep", lambda *_args, **_kwargs: None)
+
+    try:
+        load_geojson_features(
+            "https://www.virginiaroads.org/api/download/v1/items/x/geojson?layers=1",
+            fallback_prefix="hin",
+            timeout_seconds=15,
+        )
+        assert False, "Expected ValueError for unresolved pending response"
+    except ValueError as exc:
+        assert "must be a FeatureCollection" in str(exc)
+
