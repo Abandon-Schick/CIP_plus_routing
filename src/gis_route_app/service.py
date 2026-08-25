@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -119,3 +121,63 @@ class RouteIntersectionService:
         route = provider.get_route(start=request.start, end=request.end, mode=request.mode)
         intersections = self.analysis_engine.analyze_route(route.geojson)
         return RouteAnalysisResponse(route=route, intersections=intersections)
+
+
+def _cache_key(settings: Settings) -> tuple:
+    return (
+        settings.hin_data_source,
+        settings.cip_data_source,
+        settings.proximity_buffer_m,
+        settings.cip_snapshot_path,
+    )
+
+
+class CachedServiceProvider:
+    """Serves a process-wide ``RouteIntersectionService``, rebuilt at most periodically.
+
+    The live CIP feed and the HIN export don't change second-to-second, so
+    reloading and re-fetching them on every request just adds latency and a
+    new external-network failure point per request -- see ``analyze_route``'s
+    callers, which used to build a fresh service on every call. ``refresh``
+    supports an explicit manual refresh (e.g. a UI button) regardless of age.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cache: dict[tuple, tuple[RouteIntersectionService, datetime]] = {}
+
+    def get(self, settings: Settings) -> tuple[RouteIntersectionService, datetime]:
+        key = _cache_key(settings)
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                age = datetime.now(timezone.utc) - cached[1]
+                if age < timedelta(seconds=settings.data_refresh_interval_seconds):
+                    return cached
+            return self._build_and_cache(settings, key)
+
+    def refresh(self, settings: Settings) -> tuple[RouteIntersectionService, datetime]:
+        """Force a rebuild regardless of cache age."""
+        with self._lock:
+            return self._build_and_cache(settings, _cache_key(settings))
+
+    def _build_and_cache(
+        self, settings: Settings, key: tuple
+    ) -> tuple[RouteIntersectionService, datetime]:
+        service = RouteIntersectionService.from_settings(settings=settings)
+        entry = (service, datetime.now(timezone.utc))
+        self._cache[key] = entry
+        return entry
+
+
+_cached_service_provider = CachedServiceProvider()
+
+
+def get_cached_service(settings: Settings) -> tuple[RouteIntersectionService, datetime]:
+    """Return the process-wide cached service and when it was last built."""
+    return _cached_service_provider.get(settings)
+
+
+def refresh_cached_service(settings: Settings) -> tuple[RouteIntersectionService, datetime]:
+    """Force an immediate rebuild of the process-wide cached service."""
+    return _cached_service_provider.refresh(settings)

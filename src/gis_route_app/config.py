@@ -30,6 +30,8 @@ class Settings:
     # Meters; route–dataset matching uses a buffer of this width (see SpatialAnalysisEngine).
     proximity_buffer_m: float = 50.0
     cip_snapshot_path: str = "data/cip_snapshot.json"
+    # Seconds; live datasets are re-fetched at most this often (see service.get_cached_service).
+    data_refresh_interval_seconds: float = 24 * 60 * 60
 
 
 def get_settings() -> Settings:
@@ -64,4 +66,7 @@ def get_settings() -> Settings:
             float(os.getenv("PROXIMITY_BUFFER_M", "50")),
         ),
         cip_snapshot_path=os.getenv("CIP_SNAPSHOT_PATH", "data/cip_snapshot.json"),
+        data_refresh_interval_seconds=float(
+            os.getenv("DATA_REFRESH_INTERVAL_SECONDS", str(24 * 60 * 60))
+        ),
     )

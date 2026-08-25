@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from .config import get_settings
 from .models import RouteAnalysisResponse, RouteRequest
 from .routing import RoutingError
-from .service import RouteIntersectionService
+from .service import get_cached_service, refresh_cached_service
 
 app = FastAPI(
     title="GIS Route Intersection API",
@@ -17,11 +17,6 @@ app = FastAPI(
     ),
     version="0.1.0",
 )
-
-
-def _build_service() -> RouteIntersectionService:
-    settings = get_settings()
-    return RouteIntersectionService.from_settings(settings=settings)
 
 
 @app.get("/health")
@@ -34,9 +29,16 @@ def health() -> dict[str, str]:
 def analyze_route(payload: RouteRequest) -> RouteAnalysisResponse:
     """Generate route and return intersection analysis for HIN and CIP."""
     try:
-        service = _build_service()
+        service, _ = get_cached_service(get_settings())
         return service.analyze(payload)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=500, detail=f"Dataset file missing: {exc}") from exc
     except RoutingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/refresh-data")
+def refresh_data() -> dict[str, str]:
+    """Force an immediate re-fetch of the HIN/CIP datasets, bypassing the cache."""
+    _, refreshed_at = refresh_cached_service(get_settings())
+    return {"status": "ok", "refreshed_at": refreshed_at.isoformat()}

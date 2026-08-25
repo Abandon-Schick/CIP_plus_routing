@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pydeck as pdk
@@ -31,7 +32,7 @@ from gis_route_app.models import (
     TravelMode,
 )
 from gis_route_app.routing import RoutingError
-from gis_route_app.service import RouteIntersectionService
+from gis_route_app.service import RouteIntersectionService, get_cached_service, refresh_cached_service
 
 NEAR_ME_URL = (
     "https://www.arcgis.com/apps/instant/nearbybeta/index.html"
@@ -151,6 +152,17 @@ def _build_percentage_series(
             "Percent": [max(hin_pct, 0.0), max(cip_pct, 0.0), max(none_pct, 0.0)],
         }
     )
+
+
+def _format_age(age: timedelta) -> str:
+    total_seconds = max(0, int(age.total_seconds()))
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    if total_seconds < 3600:
+        return f"{total_seconds // 60}m"
+    if total_seconds < 86400:
+        return f"{total_seconds // 3600}h"
+    return f"{total_seconds // 86400}d"
 
 
 def _pick_property(properties: dict[str, object], keys: list[str]) -> str:
@@ -879,6 +891,17 @@ def _render_route_tab() -> None:
                 f"PROXIMITY_BUFFER_M={settings.proximity_buffer_m}",
                 language="text",
             )
+            _, cached_at = get_cached_service(settings)
+            age = datetime.now(timezone.utc) - cached_at
+            st.caption(
+                f"HIN/CIP data last refreshed {_format_age(age)} ago "
+                f"(auto-refreshes every {settings.data_refresh_interval_seconds / 3600:.0f}h)."
+            )
+            if st.button("Refresh live data now"):
+                with st.spinner("Re-fetching HIN/CIP datasets..."):
+                    refresh_cached_service(settings)
+                st.success("Data refreshed.")
+                st.rerun()
 
         if "start_address_input" not in st.session_state:
             st.session_state["start_address_input"] = _DEFAULT_START_ADDRESS
@@ -974,7 +997,7 @@ def _render_route_tab() -> None:
             selected_end = _resolve_selected_address(end_address, end_selection)
             start_coord = _geocode_address(selected_start, settings.request_timeout_seconds)
             end_coord = _geocode_address(selected_end, settings.request_timeout_seconds)
-            service = RouteIntersectionService.from_settings(settings)
+            service, _ = get_cached_service(settings)
             request = RouteRequest(
                 start=start_coord,
                 end=end_coord,

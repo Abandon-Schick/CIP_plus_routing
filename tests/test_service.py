@@ -1,6 +1,17 @@
 from gis_route_app.config import Settings
 from gis_route_app.models import Coordinate, RouteRequest, TravelMode
-from gis_route_app.service import RouteIntersectionService
+from gis_route_app.service import CachedServiceProvider, RouteIntersectionService
+
+
+def _local_settings(tmp_path, **overrides) -> Settings:
+    defaults = dict(
+        routing_provider="mock",
+        hin_data_source="data/hin.geojson",
+        cip_data_source="data/cip.geojson",
+        cip_snapshot_path=str(tmp_path / "cip_snapshot.json"),
+    )
+    defaults.update(overrides)
+    return Settings(**defaults)
 
 
 def test_service_analyze_with_sample_data(tmp_path) -> None:
@@ -79,3 +90,48 @@ def test_service_from_data_files_falls_back_to_local_hin(
     assert any(
         source == "data/hin.geojson" and prefix == "hin" for source, prefix in calls
     )
+
+
+def test_cached_service_provider_reuses_within_interval(tmp_path) -> None:
+    settings = _local_settings(tmp_path, data_refresh_interval_seconds=3600.0)
+    provider = CachedServiceProvider()
+
+    service_a, built_at_a = provider.get(settings)
+    service_b, built_at_b = provider.get(settings)
+
+    assert service_a is service_b
+    assert built_at_a == built_at_b
+
+
+def test_cached_service_provider_rebuilds_when_interval_elapsed(tmp_path) -> None:
+    # A zero-second interval means the cached entry is always considered stale.
+    settings = _local_settings(tmp_path, data_refresh_interval_seconds=0.0)
+    provider = CachedServiceProvider()
+
+    service_a, _ = provider.get(settings)
+    service_b, _ = provider.get(settings)
+
+    assert service_a is not service_b
+
+
+def test_cached_service_provider_refresh_forces_rebuild(tmp_path) -> None:
+    settings = _local_settings(tmp_path, data_refresh_interval_seconds=3600.0)
+    provider = CachedServiceProvider()
+
+    service_a, _ = provider.get(settings)
+    service_b, _ = provider.refresh(settings)
+    service_c, _ = provider.get(settings)
+
+    assert service_a is not service_b
+    assert service_b is service_c
+
+
+def test_cached_service_provider_keys_by_settings(tmp_path) -> None:
+    settings_a = _local_settings(tmp_path, cip_snapshot_path=str(tmp_path / "a.json"))
+    settings_b = _local_settings(tmp_path, cip_snapshot_path=str(tmp_path / "b.json"))
+    provider = CachedServiceProvider()
+
+    service_a, _ = provider.get(settings_a)
+    service_b, _ = provider.get(settings_b)
+
+    assert service_a is not service_b
