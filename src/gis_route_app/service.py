@@ -7,10 +7,44 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 from .analysis import SpatialAnalysisEngine
+from .categorization import CipSnapshotStore
 from .config import Settings
-from .datasets import load_geojson_features
+from .datasets import DatasetFeature, load_geojson_features
 from .models import RouteAnalysisResponse, RouteRequest
 from .routing import RoutingContext, build_routing_provider
+
+_HIN_FLAG_FIELD = "HISN_2023"
+
+
+def _is_flagged_high_injury(feature: DatasetFeature) -> bool:
+    """Whether a HIN source feature is flagged high-injury under the current vintage.
+
+    The static HIN export includes segments evaluated but not flagged in every
+    vintage (e.g. Grove Ave, Walmsley Blvd under HISN_2023) alongside the ones
+    that are; without this check every evaluated segment counts as HIN.
+    """
+    value = feature.properties.get(_HIN_FLAG_FIELD)
+    return value in (1, "1", True)
+
+
+def _bucket_cip_features(
+    features: list[DatasetFeature], snapshot_path: str | Path
+) -> list[DatasetFeature]:
+    """Attach each CIP feature's citizen-facing bucket via the snapshot store.
+
+    The bucket travels as an added ``cip_bucket`` property so downstream
+    consumers (analysis, API, UI) don't need a separate lookup -- it's just
+    part of the feature's properties like anything else in the source data.
+    """
+    result = CipSnapshotStore(snapshot_path).refresh(features)
+    return [
+        DatasetFeature(
+            feature_id=bf.feature.feature_id,
+            geometry=bf.feature.geometry,
+            properties={**bf.feature.properties, "cip_bucket": bf.bucket},
+        )
+        for bf in result.features
+    ]
 
 
 @dataclass(frozen=True)
@@ -50,11 +84,13 @@ class RouteIntersectionService:
                 )
             else:
                 raise
+        hin_features = [f for f in hin_features if _is_flagged_high_injury(f)]
         cip_features = load_geojson_features(
             cip_path,
             fallback_prefix="cip",
             timeout_seconds=settings.request_timeout_seconds,
         )
+        cip_features = _bucket_cip_features(cip_features, settings.cip_snapshot_path)
         engine = SpatialAnalysisEngine(
             hin_features=hin_features,
             cip_features=cip_features,

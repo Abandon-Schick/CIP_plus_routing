@@ -212,6 +212,7 @@ def test_build_cip_overlap_details_frame_empty_intersections() -> None:
     assert list(frame.columns) == [
         "Overlap Percent",
         "Name",
+        "Bucket",
         "Category",
         "Description",
         "Cost",
@@ -282,6 +283,7 @@ def test_build_cip_overlap_details_frame_normalizes_and_sorts() -> None:
     assert list(frame.columns) == [
         "Overlap Percent",
         "Name",
+        "Bucket",
         "Category",
         "Description",
         "Cost",

@@ -29,6 +29,7 @@ class Settings:
     )
     # Meters; route–dataset matching uses a buffer of this width (see SpatialAnalysisEngine).
     proximity_buffer_m: float = 50.0
+    cip_snapshot_path: str = "data/cip_snapshot.json"
 
 
 def get_settings() -> Settings:
@@ -62,4 +63,5 @@ def get_settings() -> Settings:
             0.0,
             float(os.getenv("PROXIMITY_BUFFER_M", "50")),
         ),
+        cip_snapshot_path=os.getenv("CIP_SNAPSHOT_PATH", "data/cip_snapshot.json"),
     )

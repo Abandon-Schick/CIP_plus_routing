@@ -168,6 +168,7 @@ def _build_cip_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFr
     columns = [
         "Overlap Percent",
         "Name",
+        "Bucket",
         "Category",
         "Description",
         "Cost",
@@ -183,6 +184,7 @@ def _build_cip_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFr
                 ["project_name", "ProjectName", "name", "Name", "title", "Title"],
             )
             or intersection.feature_id,
+            "Bucket": intersection.properties.get("cip_bucket", "planned"),
             "Category": _pick_property(
                 intersection.properties,
                 ["category", "Category", "project_category", "kind", "type", "Type"],
@@ -865,95 +867,95 @@ def _resolve_ors_api_key(
 
 
 def _render_route_tab() -> None:
-    st.subheader("GIS Route Intersection Analysis")
-    st.caption("Set start/end addresses and evaluate route overlap with HIN/CIP datasets.")
-
     settings = get_settings()
-    with st.expander("Data source settings", expanded=False):
-        st.write("Current defaults loaded from environment:")
-        st.code(
-            f"HIN_DATA_SOURCE={settings.hin_data_source}\n"
-            f"CIP_DATA_SOURCE={settings.cip_data_source}\n"
-            f"PROXIMITY_BUFFER_M={settings.proximity_buffer_m}",
-            language="text",
-        )
+    with st.expander("GIS Route Intersection Analysis", expanded=True):
+        st.caption("Set start/end addresses and evaluate route overlap with HIN/CIP datasets.")
 
-    if "start_address_input" not in st.session_state:
-        st.session_state["start_address_input"] = _DEFAULT_START_ADDRESS
-    if "end_address_input" not in st.session_state:
-        st.session_state["end_address_input"] = _DEFAULT_END_ADDRESS
-
-    a1, a2, _ = st.columns([1, 1, 4])
-    with a1:
-        if st.button("Swap start/end"):
-            swapped_start, swapped_end = _swap_addresses(
-                st.session_state["start_address_input"],
-                st.session_state["end_address_input"],
+        with st.expander("Data source settings", expanded=False):
+            st.write("Current defaults loaded from environment:")
+            st.code(
+                f"HIN_DATA_SOURCE={settings.hin_data_source}\n"
+                f"CIP_DATA_SOURCE={settings.cip_data_source}\n"
+                f"PROXIMITY_BUFFER_M={settings.proximity_buffer_m}",
+                language="text",
             )
-            st.session_state["start_address_input"] = swapped_start
-            st.session_state["end_address_input"] = swapped_end
-    with a2:
-        if st.button("Reset addresses"):
+
+        if "start_address_input" not in st.session_state:
             st.session_state["start_address_input"] = _DEFAULT_START_ADDRESS
+        if "end_address_input" not in st.session_state:
             st.session_state["end_address_input"] = _DEFAULT_END_ADDRESS
 
-    c1, c2 = st.columns(2)
-    with c1:
-        start_address = st.text_input(
-            "Start address",
-            key="start_address_input",
-        )
-        start_suggestions = _autocomplete_addresses(
-            start_address,
-            timeout_seconds=settings.request_timeout_seconds,
-        )
-        start_selection = st.selectbox(
-            "Start address suggestions",
-            options=[_typed_address_option(start_address)] + start_suggestions,
-            help="Type at least 3 characters to get autocomplete suggestions.",
-        )
-        mode = st.selectbox("Travel mode", [m.value for m in TravelMode], index=0)
+        a1, a2, _ = st.columns([1, 1, 4])
+        with a1:
+            if st.button("Swap start/end"):
+                swapped_start, swapped_end = _swap_addresses(
+                    st.session_state["start_address_input"],
+                    st.session_state["end_address_input"],
+                )
+                st.session_state["start_address_input"] = swapped_start
+                st.session_state["end_address_input"] = swapped_end
+        with a2:
+            if st.button("Reset addresses"):
+                st.session_state["start_address_input"] = _DEFAULT_START_ADDRESS
+                st.session_state["end_address_input"] = _DEFAULT_END_ADDRESS
 
-    with c2:
-        end_address = st.text_input(
-            "End address",
-            key="end_address_input",
-        )
-        end_suggestions = _autocomplete_addresses(
-            end_address,
-            timeout_seconds=settings.request_timeout_seconds,
-        )
-        end_selection = st.selectbox(
-            "End address suggestions",
-            options=[_typed_address_option(end_address)] + end_suggestions,
-            help="Type at least 3 characters to get autocomplete suggestions.",
-        )
-        provider = st.selectbox(
-            "Routing provider",
-            options=["mock", "ors"],
-            index=0 if settings.routing_provider != "ors" else 1,
-        )
-        env_ors_key = settings.openrouteservice_api_key or ""
-        if "ors_api_key_input" not in st.session_state:
-            st.session_state["ors_api_key_input"] = env_ors_key
-        ors_api_key_input = st.text_input(
-            "ORS API key",
-            key="ors_api_key_input",
-            type="password",
-            help=(
-                "Used only when routing provider is 'ors'. "
-                "Overrides OPENROUTESERVICE_API_KEY for this analysis request."
-            ),
-            placeholder="Paste OpenRouteService API key",
-        )
+        c1, c2 = st.columns(2)
+        with c1:
+            start_address = st.text_input(
+                "Start address",
+                key="start_address_input",
+            )
+            start_suggestions = _autocomplete_addresses(
+                start_address,
+                timeout_seconds=settings.request_timeout_seconds,
+            )
+            start_selection = st.selectbox(
+                "Start address suggestions",
+                options=[_typed_address_option(start_address)] + start_suggestions,
+                help="Type at least 3 characters to get autocomplete suggestions.",
+            )
+            mode = st.selectbox("Travel mode", [m.value for m in TravelMode], index=0)
 
-    submitted = st.button("Analyze route")
+        with c2:
+            end_address = st.text_input(
+                "End address",
+                key="end_address_input",
+            )
+            end_suggestions = _autocomplete_addresses(
+                end_address,
+                timeout_seconds=settings.request_timeout_seconds,
+            )
+            end_selection = st.selectbox(
+                "End address suggestions",
+                options=[_typed_address_option(end_address)] + end_suggestions,
+                help="Type at least 3 characters to get autocomplete suggestions.",
+            )
+            provider = st.selectbox(
+                "Routing provider",
+                options=["mock", "ors"],
+                index=0 if settings.routing_provider != "ors" else 1,
+            )
+            env_ors_key = settings.openrouteservice_api_key or ""
+            if "ors_api_key_input" not in st.session_state:
+                st.session_state["ors_api_key_input"] = env_ors_key
+            ors_api_key_input = st.text_input(
+                "ORS API key",
+                key="ors_api_key_input",
+                type="password",
+                help=(
+                    "Used only when routing provider is 'ors'. "
+                    "Overrides OPENROUTESERVICE_API_KEY for this analysis request."
+                ),
+                placeholder="Paste OpenRouteService API key",
+            )
 
-    if not submitted:
-        st.info(
-            "Enter start & end addresses. Then run the analysis."
-        )
-        return
+        submitted = st.button("Analyze route")
+
+        if not submitted:
+            st.info(
+                "Enter start & end addresses. Then run the analysis."
+            )
+            return
 
     resolved_ors_api_key = _resolve_ors_api_key(ors_api_key_input, None)
     settings = replace(

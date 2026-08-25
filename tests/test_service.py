@@ -3,8 +3,10 @@ from gis_route_app.models import Coordinate, RouteRequest, TravelMode
 from gis_route_app.service import RouteIntersectionService
 
 
-def test_service_analyze_with_sample_data() -> None:
-    settings = Settings(routing_provider="mock")
+def test_service_analyze_with_sample_data(tmp_path) -> None:
+    settings = Settings(
+        routing_provider="mock", cip_snapshot_path=str(tmp_path / "cip_snapshot.json")
+    )
     service = RouteIntersectionService.from_data_files(
         settings=settings,
         hin_path="data/hin.geojson",
@@ -47,7 +49,9 @@ def test_service_from_data_files_falls_back_to_local_hin(
 """,
         encoding="utf-8",
     )
-    settings = Settings(routing_provider="mock")
+    settings = Settings(
+        routing_provider="mock", cip_snapshot_path=str(tmp_path / "cip_snapshot.json")
+    )
     calls: list[tuple[str, str]] = []
 
     real_loader = __import__("gis_route_app.datasets", fromlist=["load_geojson_features"])
