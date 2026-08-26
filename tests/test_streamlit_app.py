@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from shapely.geometry import LineString
 
+from gis_route_app.analysis import SpatialAnalysisEngine
+from gis_route_app.config import Settings
+from gis_route_app.datasets import DatasetFeature
 from gis_route_app.models import (
     Coordinate,
     RouteAnalysisResponse,
@@ -9,17 +13,16 @@ from gis_route_app.models import (
     SegmentIntersection,
     TravelMode,
 )
+from gis_route_app.service import RouteIntersectionService
 from gis_route_app.streamlit_app import (
     GeocodingError,
-    _autocomplete_addresses,
+    _build_bucket_percentage_series,
     _build_cip_overlap_details_frame,
     _build_hin_overlap_details_frame,
     _build_route_overlap_segments,
     _geocode_address,
-    _resolve_ors_api_key,
-    _resolve_selected_address,
-    _swap_addresses,
-    _typed_address_option,
+    _latest_completion_year,
+    _parse_completion_year,
 )
 
 
@@ -50,72 +53,6 @@ def test_geocode_address_returns_coordinate(monkeypatch) -> None:
 def test_geocode_address_raises_on_empty() -> None:
     with pytest.raises(GeocodingError):
         _geocode_address("   ", timeout_seconds=5)
-
-
-def test_autocomplete_addresses_returns_display_names(monkeypatch) -> None:
-    class DummyResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self):
-            return [
-                {"display_name": "San Francisco, California, United States"},
-                {"display_name": "San Francisco Bay, California, United States"},
-            ]
-
-    def fake_get(url: str, params: dict, headers: dict, timeout: int):
-        assert "nominatim.openstreetmap.org/search" in url
-        assert params["q"] == "San Fran"
-        assert params["format"] == "jsonv2"
-        assert params["limit"] == 5
-        assert "User-Agent" in headers
-        assert timeout == 12
-        return DummyResponse()
-
-    monkeypatch.setattr("gis_route_app.streamlit_app.requests.get", fake_get)
-
-    output = _autocomplete_addresses("San Fran", timeout_seconds=12)
-
-    assert output == [
-        "San Francisco, California, United States",
-        "San Francisco Bay, California, United States",
-    ]
-
-
-def test_autocomplete_addresses_skips_short_queries() -> None:
-    assert _autocomplete_addresses("ab", timeout_seconds=5) == []
-
-
-def test_autocomplete_addresses_returns_empty_on_invalid_json(monkeypatch) -> None:
-    class DummyResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self):
-            raise ValueError("invalid json")
-
-    def fake_get(url: str, params: dict, headers: dict, timeout: int):
-        return DummyResponse()
-
-    monkeypatch.setattr("gis_route_app.streamlit_app.requests.get", fake_get)
-
-    assert _autocomplete_addresses("San Fran", timeout_seconds=5) == []
-
-
-def test_autocomplete_addresses_returns_empty_on_non_list_payload(monkeypatch) -> None:
-    class DummyResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self):
-            return {"display_name": "not a list"}
-
-    def fake_get(url: str, params: dict, headers: dict, timeout: int):
-        return DummyResponse()
-
-    monkeypatch.setattr("gis_route_app.streamlit_app.requests.get", fake_get)
-
-    assert _autocomplete_addresses("San Fran", timeout_seconds=5) == []
 
 
 def test_geocode_address_raises_on_invalid_json(monkeypatch) -> None:
@@ -150,44 +87,6 @@ def test_geocode_address_raises_on_non_list_payload(monkeypatch) -> None:
 
     with pytest.raises(GeocodingError, match="Unexpected geocoding response"):
         _geocode_address("San Francisco", timeout_seconds=5)
-
-
-def test_resolve_selected_address_returns_typed_value_for_typed_option() -> None:
-    typed = "1 Market St, San Francisco, CA"
-    selected = _typed_address_option(typed)
-    assert _resolve_selected_address(typed, selected) == typed
-
-
-def test_resolve_selected_address_returns_selected_suggestion() -> None:
-    typed = "Market"
-    selected = "Market Street, San Francisco, California, United States"
-    assert _resolve_selected_address(typed, selected) == selected
-
-
-def test_typed_address_option_prefixes_typed_value() -> None:
-    assert _typed_address_option("abc") == "Searched address: abc"
-
-
-def test_swap_addresses_swaps_values() -> None:
-    swapped_start, swapped_end = _swap_addresses("start", "end")
-    assert swapped_start == "end"
-    assert swapped_end == "start"
-
-
-def test_resolve_ors_api_key_prefers_input_value() -> None:
-    assert _resolve_ors_api_key("typed-key", "env-key") == "typed-key"
-
-
-def test_resolve_ors_api_key_uses_env_when_field_missing() -> None:
-    assert _resolve_ors_api_key(None, "env-key") == "env-key"
-
-
-def test_resolve_ors_api_key_returns_none_when_no_value() -> None:
-    assert _resolve_ors_api_key("   ", None) is None
-
-
-def test_resolve_ors_api_key_blank_input_clears_env_fallback() -> None:
-    assert _resolve_ors_api_key("   ", "env-key") is None
 
 
 def test_build_cip_overlap_details_frame_empty_intersections() -> None:
@@ -446,3 +345,141 @@ def test_build_route_overlap_segments_intersection_then_gap_then_intersection() 
     ]
     rounded = [round(v, 2) for v in frame["percent"].tolist()]
     assert rounded == [16.67, 16.67, 33.33, 16.67, 16.67]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("Fall 2031", 2031),
+        ("9/30/2026", 2026),
+        ("Winter 2025", 2025),
+        ("2031", 2031),
+        ("December 2027", 2027),
+        ("TBD", None),
+        ("N/A", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_parse_completion_year(value, expected) -> None:
+    assert _parse_completion_year(value) == expected
+
+
+def test_latest_completion_year_ignores_non_cip_and_unparseable() -> None:
+    result = RouteAnalysisResponse(
+        route=RouteResponse(
+            mode=TravelMode.DRIVING, distance_m=1000.0, duration_s=60.0,
+            geojson={"type": "Feature", "geometry": {"type": "LineString", "coordinates": []}, "properties": {}},
+        ),
+        intersections=[
+            SegmentIntersection(
+                feature_id="CIP-1", dataset="cip", overlap_length_m=10.0,
+                overlap_fraction_of_route=0.1, properties={"Completion": "Fall 2027"},
+            ),
+            SegmentIntersection(
+                feature_id="CIP-2", dataset="cip", overlap_length_m=10.0,
+                overlap_fraction_of_route=0.1, properties={"Completion": "TBD"},
+            ),
+            SegmentIntersection(
+                feature_id="CIP-3", dataset="cip", overlap_length_m=10.0,
+                overlap_fraction_of_route=0.1, properties={"Completion": "12/1/2031"},
+            ),
+            SegmentIntersection(
+                feature_id="HIN-1", dataset="hin", overlap_length_m=10.0,
+                overlap_fraction_of_route=0.1, properties={"Completion": "1999"},
+            ),
+        ],
+    )
+
+    assert _latest_completion_year(result) == 2031
+
+
+def test_latest_completion_year_none_when_no_cip_dates() -> None:
+    result = RouteAnalysisResponse(
+        route=RouteResponse(
+            mode=TravelMode.DRIVING, distance_m=1000.0, duration_s=60.0,
+            geojson={"type": "Feature", "geometry": {"type": "LineString", "coordinates": []}, "properties": {}},
+        ),
+        intersections=[],
+    )
+    assert _latest_completion_year(result) is None
+
+
+def _make_service(hin_features, cip_features) -> RouteIntersectionService:
+    return RouteIntersectionService(
+        settings=Settings(),
+        analysis_engine=SpatialAnalysisEngine(
+            hin_features=hin_features, cip_features=cip_features, proximity_buffer_m=0.0
+        ),
+    )
+
+
+def _route_result(coords) -> RouteAnalysisResponse:
+    return RouteAnalysisResponse(
+        route=RouteResponse(
+            mode=TravelMode.DRIVING,
+            distance_m=1000.0,
+            duration_s=60.0,
+            geojson={"type": "Feature", "geometry": {"type": "LineString", "coordinates": coords}, "properties": {}},
+        ),
+        intersections=[],
+    )
+
+
+def test_build_bucket_percentage_series_splits_by_bucket_and_sums_to_100() -> None:
+    # Route split into three equal thirds, one bucket each.
+    route_coords = [[-122.430, 37.772], [-122.420, 37.772]]
+    hin_features = [
+        DatasetFeature(
+            feature_id="HIN-1",
+            geometry=LineString([(-122.430, 37.772), (-122.427, 37.772)]),
+            properties={},
+        )
+    ]
+    cip_features = [
+        DatasetFeature(
+            feature_id="CIP-CONSTRUCTION",
+            geometry=LineString([(-122.427, 37.772), (-122.424, 37.772)]),
+            properties={"cip_bucket": "construction"},
+        ),
+        DatasetFeature(
+            feature_id="CIP-PLANNED",
+            geometry=LineString([(-122.424, 37.772), (-122.420, 37.772)]),
+            properties={"cip_bucket": "planned"},
+        ),
+    ]
+    service = _make_service(hin_features, cip_features)
+    result = _route_result(route_coords)
+
+    frame = _build_bucket_percentage_series(result, service)
+    pct = {row["Bucket"]: row["Percent"] for _, row in frame.iterrows()}
+
+    assert pct["High risk"] > 0
+    assert pct["Construction"] > 0
+    assert pct["Planned changes"] > 0
+    assert pct["Newly fixed"] == 0
+    assert sum(pct.values()) == pytest.approx(100.0, abs=0.01)
+
+
+def test_build_bucket_percentage_series_high_risk_wins_over_cip_on_overlap() -> None:
+    # HIN and a "completed" CIP project cover the exact same stretch of route.
+    route_coords = [[-122.430, 37.772], [-122.420, 37.772]]
+    overlap_segment = [(-122.430, 37.772), (-122.420, 37.772)]
+    hin_features = [
+        DatasetFeature(feature_id="HIN-1", geometry=LineString(overlap_segment), properties={})
+    ]
+    cip_features = [
+        DatasetFeature(
+            feature_id="CIP-COMPLETED",
+            geometry=LineString(overlap_segment),
+            properties={"cip_bucket": "completed"},
+        )
+    ]
+    service = _make_service(hin_features, cip_features)
+    result = _route_result(route_coords)
+
+    frame = _build_bucket_percentage_series(result, service)
+    pct = {row["Bucket"]: row["Percent"] for _, row in frame.iterrows()}
+
+    assert pct["High risk"] == pytest.approx(100.0, abs=0.01)
+    assert pct["Newly fixed"] == 0

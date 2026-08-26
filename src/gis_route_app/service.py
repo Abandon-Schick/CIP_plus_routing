@@ -109,9 +109,17 @@ class RouteIntersectionService:
             cip_path=settings.cip_data_source,
         )
 
-    def analyze(self, request: RouteRequest) -> RouteAnalysisResponse:
+    def analyze(
+        self, request: RouteRequest, routing_provider: str | None = None
+    ) -> RouteAnalysisResponse:
+        """Compute the route and its intersections.
+
+        ``routing_provider`` overrides ``self.settings.routing_provider`` for this
+        call only -- lets a caller retry with a different provider (e.g. falling
+        back from "ors" to "mock") without rebuilding the cached HIN/CIP data.
+        """
         provider = build_routing_provider(
-            self.settings.routing_provider,
+            routing_provider or self.settings.routing_provider,
             RoutingContext(
                 request_timeout_seconds=self.settings.request_timeout_seconds,
                 openrouteservice_api_key=self.settings.openrouteservice_api_key,

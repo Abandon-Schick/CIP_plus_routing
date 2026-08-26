@@ -1,5 +1,8 @@
+import pytest
+
 from gis_route_app.config import Settings
 from gis_route_app.models import Coordinate, RouteRequest, TravelMode
+from gis_route_app.routing import RoutingError
 from gis_route_app.service import CachedServiceProvider, RouteIntersectionService
 
 
@@ -135,3 +138,23 @@ def test_cached_service_provider_keys_by_settings(tmp_path) -> None:
     service_b, _ = provider.get(settings_b)
 
     assert service_a is not service_b
+
+
+def test_analyze_routing_provider_override_falls_back_from_ors_to_mock(tmp_path) -> None:
+    # "ors" with no API key raises RoutingError; the override lets a caller retry
+    # with "mock" on the same (already-loaded) service instead of rebuilding it.
+    settings = _local_settings(tmp_path, routing_provider="ors", openrouteservice_api_key=None)
+    service = RouteIntersectionService.from_settings(settings=settings)
+    req = RouteRequest(
+        start=Coordinate(lon=-77.487006716845002, lat=37.467975165527903),
+        end=Coordinate(lon=-77.486091456900496, lat=37.468371784651197),
+        mode=TravelMode.DRIVING,
+    )
+
+    with pytest.raises(RoutingError):
+        service.analyze(req)
+
+    result = service.analyze(req, routing_provider="mock")
+
+    assert result.route.mode == TravelMode.DRIVING
+    assert result.route.distance_m > 0
