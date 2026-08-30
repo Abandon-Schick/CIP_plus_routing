@@ -9,7 +9,6 @@ import pandas as pd
 import pydeck as pdk
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from pyproj import Geod
 from shapely.geometry import (
     GeometryCollection,
@@ -34,15 +33,11 @@ from gis_route_app.models import (
 from gis_route_app.routing import RoutingError
 from gis_route_app.service import RouteIntersectionService, get_cached_service, refresh_cached_service
 
-NEAR_ME_URL = (
-    "https://www.arcgis.com/apps/instant/nearbybeta/index.html"
-    "?appid=3990cecc7b0d42079d60b9aa3ad725e5&locale=en"
-)
 _GEOD = Geod(ellps="WGS84")
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _GEOCODER_USER_AGENT = "gis-route-intersection-dashboard/0.1"
-_DEFAULT_START_ADDRESS = "1717 East Cary Street, Shockoe Bottom, Richmond, VA"
-_DEFAULT_END_ADDRESS = "407 Cleveland St, Richmond, VA"
+_DEFAULT_START_ADDRESS = "700 East Main Street, Richmond, VA"
+_DEFAULT_END_ADDRESS = "1200 Semmes Avenue, Richmond, VA"
 # One color per citizen-facing bucket, shared by the overlap bar, the route line on
 # the map, and the overlaid project/street geometries -- so all three always agree.
 _BUCKET_COLOR_HEX: dict[str, str] = {
@@ -893,7 +888,11 @@ def _render_route_tab() -> None:
         c1, c2 = st.columns(2)
         with c1:
             start_address = st.text_input("Start address", key="start_address_input")
-            mode = st.selectbox("Travel mode", [m.value for m in TravelMode], index=0)
+            mode = st.selectbox(
+                "Travel mode",
+                [m.value for m in TravelMode],
+                index=list(TravelMode).index(TravelMode.WALKING),
+            )
         with c2:
             end_address = st.text_input("End address", key="end_address_input")
 
@@ -979,14 +978,7 @@ def main() -> None:
     st.set_page_config(page_title="Roadway Repairs Along Route", layout="wide")
     st.title("Street Vision: Your route's future")
 
-    near_me_tab, route_tab = st.tabs(["Near me", "Along a route"])
-
-    with near_me_tab:
-        st.subheader("Find projects happening within a radius")
-        components.iframe(NEAR_ME_URL, height=900, scrolling=True)
-
-    with route_tab:
-        _render_route_tab()
+    _render_route_tab()
 
 
 if __name__ == "__main__":

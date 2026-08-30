@@ -23,7 +23,7 @@
 - `config.py` -- `Settings` dataclass, loaded from environment variables via `.env`
 - `api.py` -- FastAPI app (`/health`, `/analyze-route`, `/refresh-data`)
 - `cli.py` -- `gis-route-cli` entry point
-- `streamlit_app.py` -- the dashboard (`Near me` and `Along a route` tabs)
+- `streamlit_app.py` -- the dashboard
 
 ### `tests/`
 Mirrors the package layout: `test_analysis_engine.py`, `test_categorization.py`,

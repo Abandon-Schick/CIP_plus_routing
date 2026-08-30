@@ -1,9 +1,16 @@
+import threading
+import time
+
 import pytest
 
 from gis_route_app.config import Settings
 from gis_route_app.models import Coordinate, RouteRequest, TravelMode
 from gis_route_app.routing import RoutingError
-from gis_route_app.service import CachedServiceProvider, RouteIntersectionService
+from gis_route_app.service import (
+    CachedServiceProvider,
+    RouteIntersectionService,
+    run_background_refresh,
+)
 
 
 def _local_settings(tmp_path, **overrides) -> Settings:
@@ -158,3 +165,53 @@ def test_analyze_routing_provider_override_falls_back_from_ors_to_mock(tmp_path)
 
     assert result.route.mode == TravelMode.DRIVING
     assert result.route.distance_m > 0
+
+
+def test_run_background_refresh_calls_refresh_on_a_timer_until_stopped(tmp_path) -> None:
+    settings = _local_settings(tmp_path, data_refresh_interval_seconds=0.02)
+    provider = CachedServiceProvider()
+    calls: list[None] = []
+    original_refresh = provider.refresh
+
+    def spy_refresh(s: Settings):
+        calls.append(None)
+        return original_refresh(s)
+
+    provider.refresh = spy_refresh  # type: ignore[method-assign]
+    stop_event = threading.Event()
+
+    thread = threading.Thread(
+        target=run_background_refresh, args=(settings, stop_event, provider)
+    )
+    thread.start()
+    time.sleep(0.15)
+    stop_event.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert len(calls) >= 1
+
+
+def test_run_background_refresh_survives_refresh_errors(tmp_path) -> None:
+    settings = _local_settings(tmp_path, data_refresh_interval_seconds=0.02)
+    provider = CachedServiceProvider()
+    calls: list[None] = []
+
+    def failing_refresh(s: Settings):
+        calls.append(None)
+        raise RuntimeError("simulated data source outage")
+
+    provider.refresh = failing_refresh  # type: ignore[method-assign]
+    stop_event = threading.Event()
+
+    thread = threading.Thread(
+        target=run_background_refresh, args=(settings, stop_event, provider)
+    )
+    thread.start()
+    time.sleep(0.15)
+    stop_event.set()
+    thread.join(timeout=2)
+
+    # The loop keeps retrying instead of dying on the first failure.
+    assert not thread.is_alive()
+    assert len(calls) >= 2

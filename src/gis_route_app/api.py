@@ -2,12 +2,35 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 
 from .config import get_settings
 from .models import RouteAnalysisResponse, RouteRequest
 from .routing import RoutingError
-from .service import get_cached_service, refresh_cached_service
+from .service import get_cached_service, refresh_cached_service, run_background_refresh
+
+_background_refresh_stop = threading.Event()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    thread = threading.Thread(
+        target=run_background_refresh,
+        args=(get_settings(), _background_refresh_stop),
+        daemon=True,
+        name="cip-data-refresh",
+    )
+    thread.start()
+    try:
+        yield
+    finally:
+        _background_refresh_stop.set()
+        thread.join(timeout=5)
+
 
 app = FastAPI(
     title="GIS Route Intersection API",
@@ -16,6 +39,7 @@ app = FastAPI(
         "with High Injury Network and Capital Improvement Projects datasets."
     ),
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 

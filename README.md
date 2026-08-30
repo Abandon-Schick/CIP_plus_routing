@@ -11,9 +11,7 @@ The project includes:
 
 - a **FastAPI service** (`/analyze-route`)
 - a **CLI tool** (`gis-route-cli`)
-- a **Streamlit dashboard** with:
-  - **Near me** tab (embedded ArcGIS Nearby app iframe)
-  - **Route intersection** tab (start/end controls + overlap chart)
+- a **Streamlit dashboard** (start/end route controls + overlap chart)
 
 ## Architecture
 
@@ -112,15 +110,9 @@ Or run with module mode:
 python3 -m streamlit run src/gis_route_app/streamlit_app.py
 ```
 
-Dashboard tabs:
-
-- **Near me**: embeds  
-  `https://www.arcgis.com/apps/instant/nearbybeta/index.html?appid=3990cecc7b0d42079d60b9aa3ad725e5&locale=en`
-- **Route intersection**: address-based route input controls with autocomplete suggestions, summary metrics, and a line chart showing:
-  - percent of route intersecting **HIN**
-  - percent of route intersecting **CIP**
-  - percent of route intersecting **neither**
-  - a compact route map panel with start/end markers and route geometry
+Dashboard: address-based route input controls, a citizen-facing summary
+(High risk / Planned / Construction / Newly fixed buckets), and a route map
+panel with start/end markers and route geometry.
 
 Override dataset sources at runtime (file path or URL):
 

@@ -33,5 +33,10 @@ their intersection with the High Injury Network (HIN) and Capital Improvement Pr
   `DATA_REFRESH_INTERVAL_SECONDS` (default 24h) -- see `get_cached_service` /
   `refresh_cached_service` in `service.py`. Don't reintroduce a fresh build per request;
   that reintroduces a live-network dependency on every single call.
+- The FastAPI app (`api.py`) also runs `run_background_refresh` in a daemon thread from
+  its `lifespan`, so the CIP snapshot diffs on a schedule even with no traffic --
+  otherwise a project that disappears and reappears between two widely-spaced requests
+  would never get detected. The CLI and Streamlit don't run this; they're short-lived
+  or traffic-driven, so lazy refresh-on-request is enough there.
 - `pyproject.toml` sets `pythonpath = ["src"]` for pytest, so tests import
   `gis_route_app` directly without an editable install.

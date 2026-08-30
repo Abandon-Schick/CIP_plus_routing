@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -189,3 +190,27 @@ def get_cached_service(settings: Settings) -> tuple[RouteIntersectionService, da
 def refresh_cached_service(settings: Settings) -> tuple[RouteIntersectionService, datetime]:
     """Force an immediate rebuild of the process-wide cached service."""
     return _cached_service_provider.refresh(settings)
+
+
+def run_background_refresh(
+    settings: Settings,
+    stop_event: threading.Event,
+    provider: CachedServiceProvider | None = None,
+) -> None:
+    """Refresh the cached service on a timer until ``stop_event`` is set.
+
+    Without this, the CIP snapshot only diffs when a request happens to
+    arrive after the cache goes stale -- so a project that disappears and
+    reappears between two widely-spaced requests (or during a quiet stretch
+    with no traffic at all) would never be detected. Meant to run in a
+    daemon thread started from the API's lifespan; the first refresh fires
+    after one interval, not immediately, so process startup doesn't block
+    on a live network fetch.
+    """
+    target = provider if provider is not None else _cached_service_provider
+    logger = logging.getLogger(__name__)
+    while not stop_event.wait(settings.data_refresh_interval_seconds):
+        try:
+            target.refresh(settings)
+        except Exception:
+            logger.exception("Background data refresh failed")
