@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Street Vision</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="nav.css" />
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <div id="status" role="status">Loading your route…</div>
+
+    <details id="simulator" hidden open>
+      <summary>Simulated location</summary>
+      <div class="sim-row">
+        <button id="sim-play" type="button" aria-label="Play">▶</button>
+        <input id="sim-progress" type="range" min="0" max="1000" value="0" aria-label="Position along route" />
+      </div>
+      <label class="sim-row">
+        Speed
+        <select id="sim-speed">
+          <option value="1">1× (real pace)</option>
+          <option value="5" selected>5×</option>
+          <option value="15">15×</option>
+          <option value="40">40×</option>
+        </select>
+      </label>
+    </details>
+
+    <button id="recenter" type="button" hidden>Re-center</button>
+
+    <section id="info-bar" aria-live="polite" hidden>
+      <header>
+        <span>Right now</span>
+        <span id="remaining"></span>
+      </header>
+      <div id="cards"></div>
+    </section>
+
+    <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

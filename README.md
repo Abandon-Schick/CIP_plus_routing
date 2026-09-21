@@ -9,9 +9,12 @@ Python-based GIS application to:
 
 The project includes:
 
-- a **FastAPI service** (`/analyze-route`)
+- a **FastAPI service** (`/analyze-route`, `/navigation-plan`)
 - a **CLI tool** (`gis-route-cli`)
 - a **Streamlit dashboard** (start/end route controls + overlap chart)
+- a **navigation-mode page** (`/navigate/`, served by the API): a live map that follows
+  a position along the route and shows what's changing where you are (currently driven
+  by a simulated walker; real GPS is the next step)
 
 ## Architecture
 
@@ -75,6 +78,10 @@ Health check:
 ```bash
 curl http://localhost:8000/health
 ```
+
+Navigation mode demo (Richmond route, simulated walker): open
+<http://localhost:8000/navigate/> once the API is running. The first load fetches the
+live CIP data, so it can take a few seconds.
 
 Analyze route:
 

@@ -38,5 +38,11 @@ their intersection with the High Injury Network (HIN) and Capital Improvement Pr
   otherwise a project that disappears and reappears between two widely-spaced requests
   would never get detected. The CLI and Streamlit don't run this; they're short-lived
   or traffic-driven, so lazy refresh-on-request is enough there.
+- Navigation mode (`web/navigate/`, opened at `http://localhost:8000/navigate/`) is a
+  plain-JS MapLibre page, not Streamlit -- Streamlit reruns the whole script per update,
+  which can't drive a live follow-the-user map. It takes `?start=lon,lat&end=lon,lat&mode=`
+  (defaults to the Richmond demo route) and `?debug` (exposes `window.__nav`). Text shown
+  in its info bar comes from `summary.py`, the same source as the Streamlit sections.
+  There is no JS test runner; `geo.js` is pure so it can be exercised from a browser console.
 - `pyproject.toml` sets `pythonpath = ["src"]` for pytest, so tests import
   `gis_route_app` directly without an editable install.

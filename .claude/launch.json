@@ -4,8 +4,20 @@
     {
       "name": "streamlit",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "source .venv/bin/activate && streamlit run src/gis_route_app/streamlit_app.py --server.headless true --server.port 8501"],
+      "runtimeArgs": [
+        "-c",
+        "source .venv/bin/activate && streamlit run src/gis_route_app/streamlit_app.py --server.headless true --server.port 8501"
+      ],
       "port": 8501
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "source .venv/bin/activate && uvicorn gis_route_app.main:app --port 8000"
+      ],
+      "port": 8000
     }
   ]
 }

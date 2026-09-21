@@ -5,11 +5,14 @@ from __future__ import annotations
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .models import RouteAnalysisResponse, RouteRequest
+from .navigation import NavigationPlan, build_navigation_plan
 from .routing import RoutingError
 from .service import get_cached_service, refresh_cached_service, run_background_refresh
 
@@ -66,3 +69,21 @@ def refresh_data() -> dict[str, str]:
     """Force an immediate re-fetch of the HIN/CIP datasets, bypassing the cache."""
     _, refreshed_at = refresh_cached_service(get_settings())
     return {"status": "ok", "refreshed_at": refreshed_at.isoformat()}
+
+
+@app.post("/navigation-plan", response_model=NavigationPlan)
+def navigation_plan(payload: RouteRequest) -> NavigationPlan:
+    """Route plus per-stretch colors and per-feature corridors/text for the live map."""
+    try:
+        service, _ = get_cached_service(get_settings())
+        result = service.analyze(payload)
+        return build_navigation_plan(result, service.analysis_engine)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=f"Dataset file missing: {exc}") from exc
+    except RoutingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+_NAVIGATE_DIR = Path(__file__).resolve().parents[2] / "web" / "navigate"
+if _NAVIGATE_DIR.is_dir():
+    app.mount("/navigate", StaticFiles(directory=_NAVIGATE_DIR, html=True), name="navigate")

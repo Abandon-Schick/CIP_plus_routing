@@ -9,19 +9,16 @@ import pandas as pd
 import pydeck as pdk
 import requests
 import streamlit as st
-from pyproj import Geod
 from shapely.geometry import (
     GeometryCollection,
     LineString,
     MultiLineString,
-    Point,
     mapping,
     shape,
 )
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import substring, unary_union
 
-from gis_route_app.analysis import union_dataset_corridors_wgs84
 from gis_route_app.config import get_settings
 from gis_route_app.models import (
     Coordinate,
@@ -30,99 +27,41 @@ from gis_route_app.models import (
     SegmentIntersection,
     TravelMode,
 )
+from gis_route_app.route_partition import (
+    bucket_corridors,
+    bucket_route_paths,
+    extract_line_geometries,
+    geometry_length_m,
+    line_metric_overlap_intervals,
+    priority_spans_on_line,
+)
 from gis_route_app.routing import RoutingError
 from gis_route_app.service import RouteIntersectionService, get_cached_service, refresh_cached_service
+from gis_route_app.summary import (
+    BUCKET_COLOR_HEX,
+    BUCKET_DISPLAY_ORDER,
+    BUCKET_LABEL,
+    BUCKET_ORDER,
+    cip_detail,
+    cip_fields,
+    hin_detail,
+    hin_fields,
+)
 
-_GEOD = Geod(ellps="WGS84")
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _GEOCODER_USER_AGENT = "gis-route-intersection-dashboard/0.1"
 _DEFAULT_START_ADDRESS = "700 East Main Street, Richmond, VA"
 _DEFAULT_END_ADDRESS = "1200 Semmes Avenue, Richmond, VA"
-# One color per citizen-facing bucket, shared by the overlap bar, the route line on
-# the map, and the overlaid project/street geometries -- so all three always agree.
-_BUCKET_COLOR_HEX: dict[str, str] = {
-    "high_risk": "#ef4444",
-    "completed": "#22c55e",
-    "construction": "#f97316",
-    "planned": "#6366f1",
-    "unaffected": "#BDBDBD",
-}
+# RGBA form of the shared bucket colors, for pydeck layers.
 _BUCKET_COLOR_RGBA: dict[str, list[int]] = {
     key: [int(hex_color[i : i + 2], 16) for i in (1, 3, 5)] + [255]
-    for key, hex_color in _BUCKET_COLOR_HEX.items()
+    for key, hex_color in BUCKET_COLOR_HEX.items()
 }
 
 
 class GeocodingError(RuntimeError):
     """Raised when address geocoding fails."""
 
-
-def _geometry_length_m(geometry: BaseGeometry) -> float:
-    if geometry.is_empty:
-        return 0.0
-    if isinstance(geometry, LineString):
-        coords = list(geometry.coords)
-        if len(coords) < 2:
-            return 0.0
-        lons = [coord[0] for coord in coords]
-        lats = [coord[1] for coord in coords]
-        return float(_GEOD.line_length(lons, lats))
-    if isinstance(geometry, MultiLineString):
-        return float(sum(_geometry_length_m(line) for line in geometry.geoms))
-    if isinstance(geometry, GeometryCollection):
-        return float(sum(_geometry_length_m(geom) for geom in geometry.geoms))
-    if geometry.geom_type in {"Polygon", "MultiPolygon", "Point", "MultiPoint"}:
-        return _geometry_length_m(geometry.boundary)
-    return float(geometry.length)
-
-
-# Priority order for resolving overlapping corridors (bar segments, route line and
-# map layer colors) -- deliberately NOT the same list as _BUCKET_DISPLAY_ORDER below.
-# This is still an open product question (does "high risk" hiding an overlapping
-# "planned" stretch undersell that a project addresses it?) -- keeping the two lists
-# separate means changing reading order doesn't silently change overlap resolution.
-_BUCKET_ORDER: list[tuple[str, str]] = [
-    ("high_risk", "High risk"),
-    ("completed", "Newly fixed"),
-    ("construction", "Construction"),
-    ("planned", "Planned changes"),
-]
-_BUCKET_DISPLAY_LABEL: dict[str, str] = dict(_BUCKET_ORDER)
-
-# Reading order for the per-bucket sections: risk identified -> planned -> underway
-# -> done. Used for section layout only, not overlap-priority resolution.
-_BUCKET_DISPLAY_ORDER: list[tuple[str, str]] = [
-    ("high_risk", "High risk"),
-    ("planned", "Planned changes"),
-    ("construction", "Construction"),
-    ("completed", "Newly fixed"),
-]
-
-
-def _bucket_corridors(
-    service: RouteIntersectionService, route_geom: BaseGeometry
-) -> dict[str, BaseGeometry]:
-    """Per-bucket corridor geometry (HIN for high risk, CIP split by ``cip_bucket``).
-
-    Shared by the summary cards, the overlap bar, and the map so all three are
-    always computed from -- and agree with -- the same underlying corridors.
-    """
-    prox = service.analysis_engine.proximity_buffer_m
-    cip_by_bucket: dict[str, list] = {}
-    for feature in service.analysis_engine.cip_features:
-        bucket = feature.properties.get("cip_bucket", "planned")
-        cip_by_bucket.setdefault(bucket, []).append(feature)
-
-    corridors = {
-        "high_risk": union_dataset_corridors_wgs84(
-            service.analysis_engine.hin_features, prox, route_geom
-        ),
-    }
-    for bucket_key in ("completed", "construction", "planned"):
-        corridors[bucket_key] = union_dataset_corridors_wgs84(
-            cip_by_bucket.get(bucket_key, []), prox, route_geom
-        )
-    return corridors
 
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
 
@@ -151,26 +90,26 @@ def _build_bucket_percentage_series(
     """Mutually-exclusive route-length percentage per citizen-facing bucket.
 
     When corridors overlap (e.g. a High Injury Network street that's also under
-    construction), the higher-priority bucket in ``_BUCKET_ORDER`` wins so the
+    construction), the higher-priority bucket in ``BUCKET_ORDER`` wins so the
     percentages sum to the total "may change" figure without double-counting.
     """
     route_geom = shape(result.route.geojson["geometry"])
-    route_distance_m = _geometry_length_m(route_geom)
+    route_distance_m = geometry_length_m(route_geom)
     if route_distance_m <= 0:
-        rows = [{"Bucket": label, "Percent": 0.0} for _, label in _BUCKET_ORDER]
+        rows = [{"Bucket": label, "Percent": 0.0} for _, label in BUCKET_ORDER]
         rows.append({"Bucket": "Unaffected", "Percent": 100.0})
         return pd.DataFrame(rows)
 
-    corridors = _bucket_corridors(service, route_geom)
+    corridors = bucket_corridors(service.analysis_engine, route_geom)
     remaining = route_geom
     rows = []
-    for key, label in _BUCKET_ORDER:
+    for key, label in BUCKET_ORDER:
         this_geom = remaining.intersection(corridors[key])
-        pct = (_geometry_length_m(this_geom) / route_distance_m) * 100.0
+        pct = (geometry_length_m(this_geom) / route_distance_m) * 100.0
         rows.append({"Bucket": label, "Percent": max(pct, 0.0)})
         remaining = remaining.difference(corridors[key])
 
-    unaffected_pct = (_geometry_length_m(remaining) / route_distance_m) * 100.0
+    unaffected_pct = (geometry_length_m(remaining) / route_distance_m) * 100.0
     rows.append({"Bucket": "Unaffected", "Percent": max(unaffected_pct, 0.0)})
     return pd.DataFrame(rows)
 
@@ -186,17 +125,6 @@ def _format_age(age: timedelta) -> str:
     return f"{total_seconds // 86400}d"
 
 
-def _pick_property(properties: dict[str, object], keys: list[str]) -> str:
-    for key in keys:
-        value = properties.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            return text
-    return ""
-
-
 def _build_cip_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFrame:
     columns = [
         "Overlap Percent",
@@ -209,39 +137,26 @@ def _build_cip_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFr
         "Status",
         "Completion",
     ]
-    rows = [
-        {
-            "Overlap Percent": round(intersection.overlap_fraction_of_route * 100.0, 2),
-            "Name": _pick_property(
-                intersection.properties,
-                ["project_name", "ProjectName", "name", "Name", "title", "Title"],
-            )
-            or intersection.feature_id,
-            "Bucket": _BUCKET_DISPLAY_LABEL.get(
-                intersection.properties.get("cip_bucket", "planned"), "Planned changes"
-            ),
-            "Category": _pick_property(
-                intersection.properties,
-                ["category", "Category", "project_category", "kind", "type", "Type"],
-            ),
-            "Description": _pick_property(
-                intersection.properties,
-                ["description", "Description", "desc", "project_description"],
-            ),
-            "Cost": _pick_property(
-                intersection.properties,
-                ["cost", "Cost", "budget", "Budget", "project_cost"],
-            ),
-            "Phase": _pick_property(intersection.properties, ["phase", "Phase"]),
-            "Status": _pick_property(intersection.properties, ["status", "Status"]),
-            "Completion": _pick_property(
-                intersection.properties,
-                ["completion", "Completion", "completion_date", "end_date"],
-            ),
-        }
-        for intersection in result.intersections
-        if intersection.dataset == "cip"
-    ]
+    rows = []
+    for intersection in result.intersections:
+        if intersection.dataset != "cip":
+            continue
+        fields = cip_fields(intersection.properties, intersection.feature_id)
+        rows.append(
+            {
+                "Overlap Percent": round(intersection.overlap_fraction_of_route * 100.0, 2),
+                "Name": fields["name"],
+                "Bucket": BUCKET_LABEL.get(
+                    intersection.properties.get("cip_bucket", "planned"), "Planned changes"
+                ),
+                "Category": fields["category"],
+                "Description": fields["description"],
+                "Cost": fields["cost"],
+                "Phase": fields["phase"],
+                "Status": fields["status"],
+                "Completion": fields["completion"],
+            }
+        )
     if not rows:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(rows, columns=columns).sort_values(
@@ -258,30 +173,20 @@ def _build_hin_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFr
         "Functional",
         "Posted Speed",
     ]
-    rows = [
-        {
-            "Overlap Percent": round(intersection.overlap_fraction_of_route * 100.0, 2),
-            "Name": _pick_property(
-                intersection.properties,
-                ["FullName", "RouteName", "name", "Name", "title", "Title"],
-            )
-            or intersection.feature_id,
-            "Street Type": _pick_property(
-                intersection.properties,
-                ["StreetType", "street_type", "streetType", "Type", "type"],
-            ),
-            "Functional": _pick_property(
-                intersection.properties,
-                ["Functional", "functional"],
-            ),
-            "Posted Speed": _pick_property(
-                intersection.properties,
-                ["PostedSpee", "PostedSpeed", "posted_speed", "speed_limit"],
-            ),
-        }
-        for intersection in result.intersections
-        if intersection.dataset == "hin"
-    ]
+    rows = []
+    for intersection in result.intersections:
+        if intersection.dataset != "hin":
+            continue
+        fields = hin_fields(intersection.properties, intersection.feature_id)
+        rows.append(
+            {
+                "Overlap Percent": round(intersection.overlap_fraction_of_route * 100.0, 2),
+                "Name": fields["name"],
+                "Street Type": fields["street_type"],
+                "Functional": fields["functional"],
+                "Posted Speed": fields["posted_speed"],
+            }
+        )
     if not rows:
         return pd.DataFrame(columns=columns)
     return pd.DataFrame(rows, columns=columns).sort_values(
@@ -290,91 +195,25 @@ def _build_hin_overlap_details_frame(result: RouteAnalysisResponse) -> pd.DataFr
     )
 
 
-def _extract_line_geometries(geometry: BaseGeometry) -> list[LineString]:
-    if geometry.is_empty:
-        return []
-    if isinstance(geometry, LineString):
-        return [geometry]
-    if isinstance(geometry, MultiLineString):
-        return [line for line in geometry.geoms if len(line.coords) >= 2]
-    if isinstance(geometry, GeometryCollection):
-        output: list[LineString] = []
-        for geom in geometry.geoms:
-            output.extend(_extract_line_geometries(geom))
-        return output
-    if geometry.geom_type in {"Polygon", "MultiPolygon"}:
-        return _extract_line_geometries(geometry.boundary)
-    return []
-
-
-def _merge_intervals(
-    intervals: list[tuple[float, float]],
-    tolerance: float = 1e-6,
-) -> list[tuple[float, float]]:
-    if not intervals:
-        return []
-    sorted_intervals = sorted(intervals, key=lambda i: i[0])
-    merged: list[tuple[float, float]] = []
-    for start, end in sorted_intervals:
-        if not merged:
-            merged.append((start, end))
-            continue
-        prev_start, prev_end = merged[-1]
-        if start <= prev_end + tolerance:
-            merged[-1] = (prev_start, max(prev_end, end))
-            continue
-        merged.append((start, end))
-    return merged
-
-
-def _line_metric_overlap_intervals(
-    route_line: LineString,
-    overlap_union: BaseGeometry,
-) -> list[tuple[float, float]]:
-    """Sub-intervals of ``route_line`` covered by ``overlap_union``, as normalized [0, 1] along the line.
-
-    Values are for ``shapely.ops.substring(..., normalized=True)`` (Shapely's native distance along
-    the line). Do not mix with geodesic meters — use substring + `_geometry_length_m` for lengths.
-    """
-    if _geometry_length_m(route_line) <= 0 or overlap_union.is_empty:
-        return []
-
-    overlap_geom = route_line.intersection(overlap_union)
-    overlap_lines = _extract_line_geometries(overlap_geom)
-    intervals: list[tuple[float, float]] = []
-    for overlap_line in overlap_lines:
-        coords = list(overlap_line.coords)
-        if len(coords) < 2:
-            continue
-        start_norm = route_line.project(Point(coords[0]), normalized=True)
-        end_norm = route_line.project(Point(coords[-1]), normalized=True)
-        lo = max(0.0, min(start_norm, end_norm))
-        hi = min(1.0, max(start_norm, end_norm))
-        if hi <= lo:
-            continue
-        intervals.append((lo, hi))
-    return _merge_intervals(intervals)
-
-
 def _build_line_overlap_intervals(
     route_line: LineString,
     overlap_union: BaseGeometry,
 ) -> list[tuple[float, float]]:
-    return _line_metric_overlap_intervals(route_line, overlap_union)
+    return line_metric_overlap_intervals(route_line, overlap_union)
 
 
 def _build_route_overlap_blocks(
     route_geom: BaseGeometry,
     overlap_union: BaseGeometry,
 ) -> list[dict[str, float | str]]:
-    route_lines = _extract_line_geometries(route_geom)
-    total_length_m = float(sum(_geometry_length_m(line) for line in route_lines))
+    route_lines = extract_line_geometries(route_geom)
+    total_length_m = float(sum(geometry_length_m(line) for line in route_lines))
     if total_length_m <= 0:
         return [{"segment": "no_overlap", "fraction": 1.0}]
 
     blocks: list[dict[str, float | str]] = []
     for line in route_lines:
-        line_length_m = _geometry_length_m(line)
+        line_length_m = geometry_length_m(line)
         if line_length_m <= 0:
             continue
         overlap_intervals = _build_line_overlap_intervals(line, overlap_union)
@@ -386,13 +225,13 @@ def _build_route_overlap_blocks(
                 continue
             if lo_n > cursor_n:
                 gap = substring(line, cursor_n, lo_n, normalized=True)
-                blocks.append({"segment": "no_overlap", "length_m": _geometry_length_m(gap)})
+                blocks.append({"segment": "no_overlap", "length_m": geometry_length_m(gap)})
             ov = substring(line, lo_n, hi_n, normalized=True)
-            blocks.append({"segment": "overlap", "length_m": _geometry_length_m(ov)})
+            blocks.append({"segment": "overlap", "length_m": geometry_length_m(ov)})
             cursor_n = hi_n
         if cursor_n < 1.0:
             tail = substring(line, cursor_n, 1.0, normalized=True)
-            blocks.append({"segment": "no_overlap", "length_m": _geometry_length_m(tail)})
+            blocks.append({"segment": "no_overlap", "length_m": geometry_length_m(tail)})
 
     if not blocks:
         return [{"segment": "no_overlap", "fraction": 1.0}]
@@ -418,82 +257,24 @@ def _build_route_overlap_blocks(
     return output
 
 
-def _priority_spans_on_line(
-    line: LineString,
-    tagged_corridors: list[tuple[str, BaseGeometry]],
-) -> list[tuple[float, float, str]]:
-    """Disjoint (start_norm, end_norm, tag) along ``line``.
-
-    ``tagged_corridors`` is in priority order (matches ``_BUCKET_ORDER``): where two
-    corridors' buffers overlap the same stretch of route, the first-listed tag wins.
-    Stretches covered by no corridor are tagged "unaffected".
-    """
-    if _geometry_length_m(line) <= 0:
-        return []
-    tol = 1e-9
-    boundaries: set[float] = {0.0, 1.0}
-    per_tag_intervals: list[tuple[str, list[tuple[float, float]]]] = []
-    for tag, geom in tagged_corridors:
-        intervals = _line_metric_overlap_intervals(line, geom)
-        per_tag_intervals.append((tag, intervals))
-        for lo, hi in intervals:
-            boundaries.add(max(0.0, min(lo, 1.0)))
-            boundaries.add(max(0.0, min(hi, 1.0)))
-
-    segs: list[tuple[float, float, str]] = []
-    sorted_bounds = sorted(boundaries)
-    for lo, hi in zip(sorted_bounds, sorted_bounds[1:]):
-        if hi <= lo + tol:
-            continue
-        mid = (lo + hi) / 2.0
-        winner = "unaffected"
-        for tag, intervals in per_tag_intervals:
-            if any(ilo - tol <= mid <= ihi + tol for ilo, ihi in intervals):
-                winner = tag
-                break
-        if segs and segs[-1][2] == winner and abs(segs[-1][1] - lo) < 1e-6:
-            segs[-1] = (segs[-1][0], hi, winner)
-        else:
-            segs.append((lo, hi, winner))
-    return segs
-
-
-def _linestring_subpath_coords(
-    line: LineString,
-    start_n: float,
-    end_n: float,
-) -> list[list[float]]:
-    if end_n <= start_n + 1e-12:
-        return []
-    sub = substring(line, start_n, end_n, normalized=True)
-    if sub.is_empty:
-        return []
-    coords = list(sub.coords)
-    if len(coords) < 2:
-        return []
-    return [[float(x), float(y)] for x, y in coords]
-
-
 def _route_path_rows_colored(
     route_geom: BaseGeometry,
     corridors: dict[str, BaseGeometry],
 ) -> list[dict[str, object]]:
     """PathLayer rows: path (lon/lat) + RGBA color + name (for the map tooltip).
 
-    One color per bucket (see _BUCKET_ORDER); "name" mirrors the bucket label since
-    a given stretch of route can sit within more than one project's buffer at once
-    -- the bucket is the one fact about that stretch guaranteed to be unambiguous.
+    "name" mirrors the bucket label since a given stretch of route can sit within
+    more than one project's buffer at once -- the bucket is the one fact about that
+    stretch guaranteed to be unambiguous.
     """
-    tagged_corridors = [(key, corridors[key]) for key, _ in _BUCKET_ORDER]
-    rows: list[dict[str, object]] = []
-    for line in _extract_line_geometries(route_geom):
-        for lo, hi, tag in _priority_spans_on_line(line, tagged_corridors):
-            path = _linestring_subpath_coords(line, lo, hi)
-            if len(path) < 2:
-                continue
-            name = _BUCKET_DISPLAY_LABEL.get(tag, "Unaffected")
-            rows.append({"path": path, "color": _BUCKET_COLOR_RGBA[tag], "name": name})
-    return rows
+    return [
+        {
+            "path": path,
+            "color": _BUCKET_COLOR_RGBA[tag],
+            "name": BUCKET_LABEL.get(tag, "Unaffected"),
+        }
+        for tag, path in bucket_route_paths(route_geom, corridors)
+    ]
 
 
 def _merge_adjacent_segment_lengths(
@@ -518,19 +299,19 @@ def _build_bucket_route_overlap_blocks(
     corridors: dict[str, BaseGeometry],
 ) -> list[dict[str, float | str]]:
     """Partition the route into ordered bucket segments + "unaffected" gaps (matches map colors)."""
-    route_lines = _extract_line_geometries(route_geom)
-    total_length_m = float(sum(_geometry_length_m(line) for line in route_lines))
+    route_lines = extract_line_geometries(route_geom)
+    total_length_m = float(sum(geometry_length_m(line) for line in route_lines))
     if total_length_m <= 0:
         return [{"segment": "unaffected", "fraction": 1.0}]
 
-    tagged_corridors = [(key, corridors[key]) for key, _ in _BUCKET_ORDER]
+    tagged_corridors = [(key, corridors[key]) for key, _ in BUCKET_ORDER]
     raw_pieces: list[tuple[float, str]] = []
     tol = 1e-6
     for line in route_lines:
         merged_line: list[tuple[float, str]] = []
-        for lo, hi, seg in _priority_spans_on_line(line, tagged_corridors):
+        for lo, hi, seg in priority_spans_on_line(line, tagged_corridors):
             span = substring(line, lo, hi, normalized=True)
-            length = _geometry_length_m(span)
+            length = geometry_length_m(span)
             if length <= tol:
                 continue
             if merged_line and merged_line[-1][1] == seg:
@@ -572,13 +353,13 @@ def _render_route_overlap_bar(
     route_geom: BaseGeometry,
     service: RouteIntersectionService,
 ) -> None:
-    corridors = _bucket_corridors(service, route_geom)
+    corridors = bucket_corridors(service.analysis_engine, route_geom)
     blocks = _build_bucket_route_overlap_blocks(route_geom, corridors)
 
     segment_html = "".join(
         (
             f"<div style='height:100%; width:{max(float(block['fraction']) * 100.0, 0.0):.6f}%; "
-            f"background:{_BUCKET_COLOR_HEX[str(block['segment'])]};'></div>"
+            f"background:{BUCKET_COLOR_HEX[str(block['segment'])]};'></div>"
         )
         for block in blocks
     )
@@ -586,14 +367,14 @@ def _render_route_overlap_bar(
     legend_items = "".join(
         (
             "<span><span style='display:inline-block; width:12px; height:12px; "
-            f"background:{_BUCKET_COLOR_HEX[key]}; margin-right:6px; border:1px solid #999;'></span>"
+            f"background:{BUCKET_COLOR_HEX[key]}; margin-right:6px; border:1px solid #999;'></span>"
             f"{label}</span>"
         )
-        for key, label in _BUCKET_ORDER
+        for key, label in BUCKET_ORDER
     )
     legend_items += (
         "<span><span style='display:inline-block; width:12px; height:12px; "
-        f"background:{_BUCKET_COLOR_HEX['unaffected']}; margin-right:6px; border:1px solid #999;'></span>"
+        f"background:{BUCKET_COLOR_HEX['unaffected']}; margin-right:6px; border:1px solid #999;'></span>"
         "Unaffected</span>"
     )
 
@@ -625,7 +406,7 @@ def _render_bucket_section_header(key: str, label: str, pct: float) -> None:
             "<p style='display:flex; align-items:center; gap:6px; font-size:0.85rem; "
             "color:#6b7280; margin:0;'>"
             "<span style='width:8px; height:8px; border-radius:50%; "
-            f"background:{_BUCKET_COLOR_HEX[key]}; display:inline-block;'></span>"
+            f"background:{BUCKET_COLOR_HEX[key]}; display:inline-block;'></span>"
             f"{label}</p>"
             f"<p style='font-size:1.75rem; font-weight:600; margin:2px 0 0.5rem;'>{pct:.0f}%</p>"
         ),
@@ -659,27 +440,21 @@ def _render_bucket_sections(
     hin_street_frame: pd.DataFrame,
 ) -> None:
     """One section per bucket, in reading order: header card, then its project list."""
-    for key, label in _BUCKET_DISPLAY_ORDER:
+    for key, label in BUCKET_DISPLAY_ORDER:
         _render_bucket_section_header(key, label, bucket_pct[label])
         if key == "high_risk":
             rows = hin_street_frame
             if rows.empty:
                 st.caption("No high risk streets along this route.")
             for _, row in rows.iterrows():
-                detail_parts = [row["Street Type"], row["Functional"]]
-                if row["Posted Speed"]:
-                    detail_parts.append(f"{row['Posted Speed']} mph posted")
-                detail = " · ".join(p for p in detail_parts if p)
+                detail = hin_detail(row["Street Type"], row["Functional"], row["Posted Speed"])
                 st.markdown(f"**{row['Name']}**" + (f"  \n{detail}" if detail else ""))
         else:
             rows = cip_details_frame[cip_details_frame["Bucket"] == label]
             if rows.empty:
                 st.caption("No projects in this bucket along this route.")
             for _, row in rows.iterrows():
-                detail_parts = [row["Category"], row["Cost"]]
-                if row["Completion"]:
-                    detail_parts.append(f"est. completion {row['Completion']}")
-                detail = " · ".join(p for p in detail_parts if p)
+                detail = cip_detail(row["Category"], row["Cost"], row["Completion"])
                 st.markdown(f"**{row['Name']}**" + (f"  \n{detail}" if detail else ""))
         st.markdown("")
 
@@ -709,7 +484,7 @@ def _intersecting_bucket_geojson(
 ) -> dict[str, dict[str, object]]:
     """Bucket key -> FeatureCollection of intersecting features, for map overlay layers."""
     seen: set[tuple[str, str]] = set()
-    by_bucket: dict[str, list[dict[str, object]]] = {key: [] for key, _ in _BUCKET_ORDER}
+    by_bucket: dict[str, list[dict[str, object]]] = {key: [] for key, _ in BUCKET_ORDER}
     hin_by_id = {f.feature_id: f for f in service.analysis_engine.hin_features}
     cip_by_id = {f.feature_id: f for f in service.analysis_engine.cip_features}
 
@@ -721,17 +496,11 @@ def _intersecting_bucket_geojson(
         if inter.dataset == "hin":
             dataset_feat = hin_by_id.get(inter.feature_id)
             bucket = "high_risk"
-            name = (
-                _pick_property(inter.properties, ["FullName", "RouteName", "Name", "name"])
-                or inter.feature_id
-            )
+            name = hin_fields(inter.properties, inter.feature_id)["name"]
         else:
             dataset_feat = cip_by_id.get(inter.feature_id)
             bucket = inter.properties.get("cip_bucket", "planned")
-            name = (
-                _pick_property(inter.properties, ["Name", "name", "project_name"])
-                or inter.feature_id
-            )
+            name = cip_fields(inter.properties, inter.feature_id)["name"]
         if dataset_feat is None:
             continue
         by_bucket.setdefault(bucket, []).append(
@@ -760,7 +529,7 @@ def _render_route_map(
         st.warning("Route geometry could not be rendered on the map.")
         return
 
-    corridors = _bucket_corridors(service, route_geom)
+    corridors = bucket_corridors(service.analysis_engine, route_geom)
     route_path_rows = _route_path_rows_colored(route_geom, corridors)
     if not route_path_rows:
         route_path_rows = [
@@ -785,7 +554,7 @@ def _render_route_map(
 
     bucket_geojson = _intersecting_bucket_geojson(service, result.intersections)
     layers: list[pdk.Layer] = []
-    for key, _ in _BUCKET_ORDER:
+    for key, _ in BUCKET_ORDER:
         fc = bucket_geojson.get(key)
         if fc is None:
             continue
