@@ -36,22 +36,41 @@ html, body {
 #status.error { color: #b91c1c; }
 #status[hidden] { display: none; }
 
-#simulator {
+#location-panel {
   position: fixed;
   top: max(12px, env(safe-area-inset-top));
   left: 12px;
   z-index: 4;
-  width: min(260px, calc(100vw - 24px));
+  width: min(270px, calc(100vw - 24px));
   padding: 8px 12px;
   background: var(--surface);
   border-radius: 10px;
   box-shadow: 0 1px 8px rgba(0, 0, 0, 0.2);
   font-size: 0.85rem;
 }
-#simulator summary { cursor: pointer; font-weight: 600; }
+#location-panel[hidden] { display: none; }
+#location-panel summary { cursor: pointer; font-weight: 600; }
+.segmented {
+  display: flex;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.segmented button {
+  flex: 1;
+  padding: 6px 8px;
+  border: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.segmented button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
 .sim-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .sim-row select { flex: 1; }
 #sim-progress { flex: 1; min-width: 0; }
+#sim-controls[hidden] { display: none; }
 #sim-play {
   width: 36px;
   height: 32px;
@@ -61,6 +80,49 @@ html, body {
   color: #fff;
   font-size: 0.95rem;
   cursor: pointer;
+}
+#gps-status { margin: 8px 0 0; color: var(--muted); }
+#gps-status.problem { color: #b45309; font-weight: 600; }
+#gps-status[hidden] { display: none; }
+
+#start-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px;
+  background: linear-gradient(to top, rgba(17, 24, 39, 0.55), rgba(17, 24, 39, 0));
+}
+#start-overlay[hidden] { display: none; }
+.start-card {
+  width: min(100%, 460px);
+  padding: 20px;
+  background: var(--surface);
+  border-radius: 16px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  margin-bottom: env(safe-area-inset-bottom);
+}
+.start-card h1 { margin: 0 0 6px; font-size: 1.3rem; }
+.start-card p { margin: 0 0 16px; color: var(--muted); line-height: 1.4; }
+.start-card button {
+  width: 100%;
+  padding: 14px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.start-card button.link {
+  margin-top: 8px;
+  padding: 8px;
+  background: none;
+  color: var(--accent);
+  font-weight: 500;
 }
 
 #recenter {
@@ -148,6 +210,8 @@ html, body {
   border: 3px solid #fff;
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35), 0 2px 6px rgba(0, 0, 0, 0.35);
 }
+.me.off-route { background: #64748b; box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.35), 0 2px 6px rgba(0, 0, 0, 0.35); }
+.me.off-route::before { border-bottom-color: #64748b; }
 .me::before {
   content: "";
   position: absolute;

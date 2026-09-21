@@ -1,10 +1,7 @@
-import {
-  activeCards,
-  boundsOfGeometry,
-  buildRouteIndex,
-  lerpAngleDeg,
-} from "./geo.js";
+import { boundsOfGeometry, buildRouteIndex, lerpAngleDeg } from "./geo.js";
+import { GpsSource } from "./gps.js";
 import { RouteSimulator } from "./simulator.js";
+import { ActiveCardTracker } from "./tracker.js";
 
 const params = new URLSearchParams(location.search);
 // Demo default: 700 East Main Street -> 1200 Semmes Avenue, Richmond (walking).
@@ -14,6 +11,21 @@ const BASEMAP_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.
 const FOLLOW_ZOOM = 17;
 const METERS_PER_MILE = 1609.344;
 const BASE_SPEED_MPS = { walking: 1.4, biking: 4.5, driving: 11 };
+// A real GPS jitters at corridor edges; keep a card up for this many samples after leaving it.
+const GPS_HOLD_SAMPLES = 2;
+const ARRIVED_WITHIN_M = 25;
+// Simulator speed multipliers offered in the panel, and how long a run may take by default.
+const SIM_SPEEDS = [1, 5, 15, 40, 100];
+const SIM_DEFAULT_MAX_SECONDS = 360;
+
+const GPS_MESSAGES = {
+  searching: ["Finding your location…", false],
+  weak: ["Weak GPS signal — waiting for a better fix…", true],
+  denied: ["Location is blocked. Allow it in your browser's site settings, or use Simulate.", true],
+  unavailable: ["Can't get a location right now.", true],
+  unsupported: ["This browser can't share its location.", true],
+  insecure: ["Location needs a secure (https) connection.", true],
+};
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -32,11 +44,15 @@ function parseLonLat(text) {
 
 async function loadPlan() {
   const mode = params.get("mode") || "walking";
-  const body = {
-    start: parseLonLat(params.get("start") || DEFAULT_START),
-    end: parseLonLat(params.get("end") || DEFAULT_END),
-    mode,
-  };
+  // A bundled GPX route is named by id; anything else is routed from start to end.
+  const routeId = params.get("route");
+  const body = routeId
+    ? { route_id: routeId, mode }
+    : {
+        start: parseLonLat(params.get("start") || DEFAULT_START),
+        end: parseLonLat(params.get("end") || DEFAULT_END),
+        mode,
+      };
   const response = await fetch("/navigation-plan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -56,11 +72,11 @@ function routeCoordinates(geometry) {
   return geometry.type === "MultiLineString" ? geometry.coordinates.flat() : geometry.coordinates;
 }
 
-function renderCards(container, cards, colorOf, labelOf) {
+function renderCards(container, cards, colorOf, quietTitle) {
   container.replaceChildren();
   const list = cards.length
     ? cards
-    : [{ bucket: "unaffected", title: labelOf("unaffected"), detail: "", quiet: true }];
+    : [{ bucket: "unaffected", title: quietTitle, detail: "", quiet: true }];
   for (const card of list) {
     const el = document.createElement("article");
     el.className = card.quiet ? "card quiet" : "card";
@@ -68,7 +84,7 @@ function renderCards(container, cards, colorOf, labelOf) {
     if (!card.quiet) {
       const bucket = document.createElement("div");
       bucket.className = "bucket";
-      bucket.textContent = labelOf(card.bucket);
+      bucket.textContent = card.bucketLabel;
       el.append(bucket);
     }
     const title = document.createElement("h2");
@@ -166,15 +182,25 @@ async function main() {
   const buckets = Object.fromEntries(plan.buckets.map((b) => [b.key, b]));
   const colorOf = (key) => (buckets[key] || buckets.unaffected).color;
   const labelOf = (key) => (buckets[key] || buckets.unaffected).label;
-  for (const card of plan.cards) card.bounds = boundsOfGeometry(card.corridor);
+  for (const card of plan.cards) {
+    card.bounds = boundsOfGeometry(card.corridor);
+    card.bucketLabel = labelOf(card.bucket);
+  }
 
-  const route = buildRouteIndex(routeCoordinates(plan.route.geometry));
-  const simulator = new RouteSimulator(route, BASE_SPEED_MPS[mode] ?? BASE_SPEED_MPS.walking);
+  const coords = routeCoordinates(plan.route.geometry);
+  const route = buildRouteIndex(coords);
+  const baseSpeedMps = BASE_SPEED_MPS[mode] ?? BASE_SPEED_MPS.walking;
+  const simulator = new RouteSimulator(route, baseSpeedMps);
+  // Default to 5x, or the slowest speed that keeps a long route (e.g. a GPX ride) watchable.
+  $("sim-speed").value = String(
+    SIM_SPEEDS.find((x) => x >= 5 && route.totalM / (baseSpeedMps * x) <= SIM_DEFAULT_MAX_SECONDS) ??
+      SIM_SPEEDS[SIM_SPEEDS.length - 1],
+  );
 
   const map = new maplibregl.Map({
     container: "map",
     style: BASEMAP_STYLE,
-    center: routeCoordinates(plan.route.geometry)[0],
+    center: coords[0],
     zoom: FOLLOW_ZOOM,
     pitch: 0,
     dragRotate: false,
@@ -189,63 +215,121 @@ async function main() {
   const meEl = document.createElement("div");
   meEl.className = "me";
   const me = new maplibregl.Marker({ element: meEl, rotationAlignment: "map", pitchAlignment: "map" })
-    .setLngLat(routeCoordinates(plan.route.geometry)[0])
+    .setLngLat(coords[0])
     .addTo(map);
 
   const infoBar = $("info-bar");
   const cardsEl = $("cards");
   const remainingEl = $("remaining");
   const recenterBtn = $("recenter");
+  const gpsStatusEl = $("gps-status");
 
+  let source = null;
+  let gps = null;
+  let activeTracker = new ActiveCardTracker(plan.cards, 0);
   let following = true;
   let followZoom = FOLLOW_ZOOM;
   let displayBearing = null;
-  let lastFixTime = null;
+  let lastFrameTime = null;
+  let lastFrameFix = null;
   let activeKey = null;
   let activeIds = new Set();
 
   function cameraPadding() {
-    const bar = infoBar.getBoundingClientRect();
-    const bottom = bar.height;
+    const bottom = infoBar.getBoundingClientRect().height;
     const visible = window.innerHeight - bottom;
     return { top: Math.max(0, visible * 0.36), bottom, left: 0, right: 0 };
   }
 
-  function updateActiveCards(point) {
-    const active = activeCards(point, plan.cards);
-    const key = active.map((c) => c.id).join("|");
-    if (key === activeKey) return;
-    activeKey = key;
-    const nextIds = new Set(active.map((c) => c.id));
+  function setActiveCorridors(nextIds) {
     plan.cards.forEach((card, i) => {
       const was = activeIds.has(card.id);
       const now = nextIds.has(card.id);
       if (was !== now) map.setFeatureState({ source: "corridors", id: i }, { active: now });
     });
     activeIds = nextIds;
-    renderCards(cardsEl, active, colorOf, labelOf);
+  }
+
+  function showCards(active, quietTitle = labelOf("unaffected")) {
+    const key = active.map((c) => c.id).join("|");
+    if (key === activeKey) return;
+    activeKey = key;
+    setActiveCorridors(new Set(active.map((c) => c.id)));
+    renderCards(cardsEl, active, colorOf, quietTitle);
     cardsEl.scrollTop = 0;
   }
 
-  function handleFix(fix) {
-    const point = [fix.lon, fix.lat];
+  // Once per position sample: which cards apply, and how far is left.
+  function onSample(fix) {
+    showCards(activeTracker.update([fix.lon, fix.lat]));
+    meEl.classList.toggle("off-route", fix.onRoute === false);
+    const leftM = Math.max(0, route.totalM - fix.distanceAlongM);
+    if (fix.onRoute === false) remainingEl.textContent = "Off route";
+    else remainingEl.textContent = leftM < ARRIVED_WITHIN_M ? "Arrived" : `${(leftM / METERS_PER_MILE).toFixed(2)} mi to go`;
+    if (source === "sim") $("sim-progress").value = String(Math.round((fix.distanceAlongM / route.totalM) * 1000));
+  }
+
+  // Every animation frame: marker and camera.
+  function onFrame(fix) {
+    lastFrameFix = fix;
     const now = performance.now();
-    const dt = lastFixTime === null ? Infinity : (now - lastFixTime) / 1000;
-    lastFixTime = now;
+    const dt = lastFrameTime === null ? Infinity : (now - lastFrameTime) / 1000;
+    lastFrameTime = now;
     displayBearing =
       displayBearing === null || !Number.isFinite(dt)
         ? fix.heading
         : lerpAngleDeg(displayBearing, fix.heading, 1 - Math.exp(-dt / 0.35));
 
-    me.setLngLat(point).setRotation(fix.heading);
+    meEl.style.display = "";
+    me.setLngLat([fix.lon, fix.lat]).setRotation(fix.heading);
     if (following) {
-      map.jumpTo({ center: point, bearing: displayBearing, zoom: followZoom, padding: cameraPadding() });
+      map.jumpTo({ center: [fix.lon, fix.lat], bearing: displayBearing, zoom: followZoom, padding: cameraPadding() });
     }
-    updateActiveCards(point);
+  }
 
-    const leftMiles = Math.max(0, route.totalM - fix.distanceAlongM) / METERS_PER_MILE;
-    remainingEl.textContent = leftMiles < 0.01 ? "Arrived" : `${leftMiles.toFixed(2)} mi to go`;
-    $("sim-progress").value = String(Math.round((fix.distanceAlongM / route.totalM) * 1000));
+  function showGpsStatus({ state, accuracyM }) {
+    if (state === "tracking") {
+      gpsStatusEl.textContent = `GPS ±${Math.round(accuracyM)} m`;
+      gpsStatusEl.classList.remove("problem");
+    } else {
+      const [message, isProblem] = GPS_MESSAGES[state];
+      gpsStatusEl.textContent = state === "weak" ? `Weak GPS signal (±${Math.round(accuracyM)} m) — waiting…` : message;
+      gpsStatusEl.classList.toggle("problem", isProblem);
+    }
+    gpsStatusEl.hidden = false;
+  }
+
+  function setSource(name) {
+    simulator.pause();
+    gps?.stop();
+    gps = null;
+    source = name;
+
+    $("source-sim").setAttribute("aria-pressed", String(name === "sim"));
+    $("source-gps").setAttribute("aria-pressed", String(name === "gps"));
+    $("sim-controls").hidden = name !== "sim";
+    gpsStatusEl.hidden = name !== "gps";
+
+    activeTracker = new ActiveCardTracker(plan.cards, name === "gps" ? GPS_HOLD_SAMPLES : 0);
+    activeKey = null;
+    setActiveCorridors(new Set());
+    displayBearing = null;
+    lastFrameTime = null;
+    following = true;
+    recenterBtn.hidden = true;
+
+    if (name === "sim") {
+      simulator.emit();
+      return;
+    }
+    meEl.style.display = "none";
+    showCards([], "Waiting for your location…");
+    remainingEl.textContent = "";
+    gps = new GpsSource(route);
+    gps.onFrame = onFrame;
+    gps.onSample = onSample;
+    gps.onStatus = showGpsStatus;
+    gps.start();
   }
 
   map.on("dragstart", () => {
@@ -258,7 +342,7 @@ async function main() {
   recenterBtn.addEventListener("click", () => {
     following = true;
     recenterBtn.hidden = true;
-    handleFix(simulator.fix());
+    if (lastFrameFix) onFrame(lastFrameFix);
   });
   new ResizeObserver(() => {
     if (following) map.jumpTo({ padding: cameraPadding() });
@@ -266,7 +350,8 @@ async function main() {
 
   // Simulated location controls.
   const playBtn = $("sim-play");
-  simulator.onFix = handleFix;
+  simulator.onFrame = onFrame;
+  simulator.onSample = onSample;
   simulator.multiplier = Number($("sim-speed").value);
   simulator.onPlayingChange = (playing) => {
     playBtn.textContent = playing ? "❚❚" : "▶";
@@ -279,13 +364,35 @@ async function main() {
   $("sim-progress").addEventListener("input", (event) => {
     simulator.seekFraction(Number(event.target.value) / 1000);
   });
+  $("source-sim").addEventListener("click", () => source !== "sim" && setSource("sim"));
+  $("source-gps").addEventListener("click", () => source !== "gps" && setSource("gps"));
 
   statusEl.hidden = true;
-  infoBar.hidden = false;
-  $("simulator").hidden = false;
-  handleFix(simulator.fix());
+  // A link meant for a phone (?source=gps) opens on a route overview and waits for a tap:
+  // the location prompt and screen wake lock both work best from a user gesture.
+  if (params.get("source") === "gps") {
+    const bounds = coords.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(coords[0], coords[0]));
+    map.fitBounds(bounds, { padding: { top: 60, left: 40, right: 40, bottom: 340 }, animate: false });
+    meEl.style.display = "none";
+    infoBar.hidden = true;
+    $("start-overlay").hidden = false;
+    const begin = (name) => {
+      $("start-overlay").hidden = true;
+      infoBar.hidden = false;
+      $("location-panel").hidden = false;
+      setSource(name);
+    };
+    $("start-gps").addEventListener("click", () => begin("gps"));
+    $("start-sim").addEventListener("click", () => begin("sim"));
+  } else {
+    infoBar.hidden = false;
+    $("location-panel").hidden = false;
+    setSource("sim");
+    // An explicit ?source=sim (the Simulate button) starts walking straight away.
+    if (params.get("source") === "sim") simulator.play();
+  }
 
-  if (params.has("debug")) window.__nav = { map, simulator, plan, route };
+  if (params.has("debug")) window.__nav = { map, simulator, plan, route, setSource, getGps: () => gps };
 }
 
 main().catch((error) => showStatus(`Something went wrong: ${error.message}`, true));

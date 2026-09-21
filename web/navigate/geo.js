@@ -56,6 +56,57 @@ export function pointAtDistance(index, meters) {
   ];
 }
 
+// Compass bearing of the route at `meters` along it, looking ahead a few meters (or back,
+// at the very end) so it doesn't twitch on every vertex.
+export function routeHeadingAt(index, meters, lookM = 12) {
+  if (meters + lookM <= index.totalM) {
+    return bearingDeg(pointAtDistance(index, meters), pointAtDistance(index, meters + lookM));
+  }
+  return bearingDeg(pointAtDistance(index, Math.max(meters - lookM, 0)), pointAtDistance(index, meters));
+}
+
+const METERS_PER_DEGREE_LAT = (EARTH_RADIUS_M * Math.PI) / 180;
+
+// Closest point on the route to `point`, optionally only looking between two distances
+// along it (so an out-and-back route can't snap to the wrong leg).
+// When several stretches are about equally close (a route that retraces itself), prefer the
+// earliest one within `preferEarlierWithinM` of the best: the caller is moving forward, so
+// the pass it hasn't reached yet is the one it is on.
+// Returns { distanceAlongM, offsetM, point } or null when the window holds no segment.
+export function nearestOnRoute(index, point, { fromM = 0, toM = Infinity, preferEarlierWithinM = 0 } = {}) {
+  const { coords, cumulative } = index;
+  const metersPerDegreeLon = METERS_PER_DEGREE_LAT * Math.cos(toRad(point[1]));
+  const local = (c) => [(c[0] - point[0]) * metersPerDegreeLon, (c[1] - point[1]) * METERS_PER_DEGREE_LAT];
+  const candidates = [];
+  for (let i = 0; i < coords.length - 1; i++) {
+    const legM = cumulative[i + 1] - cumulative[i];
+    if (cumulative[i + 1] < fromM || cumulative[i] > toM) continue;
+    const a = local(coords[i]);
+    const b = local(coords[i + 1]);
+    const abx = b[0] - a[0];
+    const aby = b[1] - a[1];
+    const len2 = abx * abx + aby * aby;
+    // Keep the result inside the window even when a leg straddles its edge.
+    const tMin = legM > 0 ? Math.max(0, (fromM - cumulative[i]) / legM) : 0;
+    const tMax = legM > 0 ? Math.min(1, (toM - cumulative[i]) / legM) : 1;
+    const t = len2 > 0 ? Math.max(tMin, Math.min(tMax, -(a[0] * abx + a[1] * aby) / len2)) : 0;
+    candidates.push({
+      offsetM: Math.hypot(a[0] + abx * t, a[1] + aby * t),
+      distanceAlongM: cumulative[i] + t * legM,
+    });
+  }
+  if (candidates.length === 0) return null;
+  const closest = candidates.reduce((a, c) => (c.offsetM < a.offsetM ? c : a));
+  const chosen =
+    preferEarlierWithinM > 0
+      ? candidates
+          .filter((c) => c.offsetM <= closest.offsetM + preferEarlierWithinM)
+          .reduce((a, c) => (c.distanceAlongM < a.distanceAlongM ? c : a))
+      : closest;
+  chosen.point = pointAtDistance(index, chosen.distanceAlongM);
+  return chosen;
+}
+
 // Ray casting; ring is an array of [lon, lat]. Boundary points may go either way.
 function inRing(point, ring) {
   const [x, y] = point;

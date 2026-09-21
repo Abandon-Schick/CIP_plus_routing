@@ -1,9 +1,7 @@
 // Stand-in for a GPS: walks a fix along the route so the page can be developed and
-// demoed on a laptop. A real-location source only has to emit the same fix shape:
-// { lon, lat, heading, distanceAlongM }.
-import { bearingDeg, pointAtDistance } from "./geo.js";
-
-const HEADING_LOOKAHEAD_M = 12;
+// demoed on a laptop. Emits the same fix shape as the real source (gps.js):
+// { lon, lat, heading, distanceAlongM, onRoute }.
+import { pointAtDistance, routeHeadingAt } from "./geo.js";
 
 export class RouteSimulator {
   constructor(routeIndex, baseSpeedMps) {
@@ -12,24 +10,28 @@ export class RouteSimulator {
     this.multiplier = 1;
     this.distanceM = 0;
     this.playing = false;
-    this.onFix = () => {};
+    this.onFrame = () => {};
+    this.onSample = () => {};
     this.onPlayingChange = () => {};
     this._lastFrame = 0;
     this._frame = null;
   }
 
   fix() {
-    const total = this.route.totalM;
     const here = pointAtDistance(this.route, this.distanceM);
-    const canLookAhead = this.distanceM + HEADING_LOOKAHEAD_M <= total;
-    const heading = canLookAhead
-      ? bearingDeg(here, pointAtDistance(this.route, this.distanceM + HEADING_LOOKAHEAD_M))
-      : bearingDeg(pointAtDistance(this.route, Math.max(this.distanceM - HEADING_LOOKAHEAD_M, 0)), here);
-    return { lon: here[0], lat: here[1], heading, distanceAlongM: this.distanceM };
+    return {
+      lon: here[0],
+      lat: here[1],
+      heading: routeHeadingAt(this.route, this.distanceM),
+      distanceAlongM: this.distanceM,
+      onRoute: true,
+    };
   }
 
   emit() {
-    this.onFix(this.fix());
+    const fix = this.fix();
+    this.onSample(fix);
+    this.onFrame(fix);
   }
 
   seekFraction(fraction) {

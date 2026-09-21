@@ -36,13 +36,34 @@ their intersection with the High Injury Network (HIN) and Capital Improvement Pr
 - The FastAPI app (`api.py`) also runs `run_background_refresh` in a daemon thread from
   its `lifespan`, so the CIP snapshot diffs on a schedule even with no traffic --
   otherwise a project that disappears and reappears between two widely-spaced requests
-  would never get detected. The CLI and Streamlit don't run this; they're short-lived
-  or traffic-driven, so lazy refresh-on-request is enough there.
+  would never get detected. The CLI doesn't run this (short-lived); Streamlit gets it
+  indirectly, see the next note.
+- Streamlit's Analyze / Simulate / Go buttons: Simulate and Go are link buttons to the
+  navigation page (`NAVIGATION_BASE_URL`, default `http://localhost:8000/navigate/`) carrying
+  the analyzed start/end/mode in the URL, enabled only while the inputs still match the last
+  analysis (kept in `st.session_state`). `_ensure_navigation_server` starts the FastAPI app
+  in a daemon thread inside the Streamlit process if nothing answers on that port, so
+  `streamlit run` alone is enough for the demo (and shares its warmed HIN/CIP cache).
+- GPX routes: `data/routes/<id>.gpx` are bundled routes (ids: lowercase letters, digits,
+  hyphens). Streamlit's **Upload a .GPX route** button is a demo stand-in that loads
+  `war-on-cars-bike-tour` rather than accepting a file -- real uploads need somewhere to
+  keep the file for the navigation page (currently only bundled routes, by id, so no
+  storage) and `defusedxml` for untrusted XML (see `gpx.py`). The API's
+  `/navigation-plan` takes `route_id` instead of start/end; the page takes `?route=<id>`.
+- Routes that retrace themselves (GPX out-and-backs): overlap intervals are measured per
+  vertex-to-vertex segment in `route_partition.line_metric_overlap_intervals`, and the
+  Streamlit percentages come from the same partition as the bar and map. Don't go back to
+  projecting overlap pieces onto the whole line -- it puts every pass at the first one's spot.
 - Navigation mode (`web/navigate/`, opened at `http://localhost:8000/navigate/`) is a
   plain-JS MapLibre page, not Streamlit -- Streamlit reruns the whole script per update,
   which can't drive a live follow-the-user map. It takes `?start=lon,lat&end=lon,lat&mode=`
-  (defaults to the Richmond demo route) and `?debug` (exposes `window.__nav`). Text shown
-  in its info bar comes from `summary.py`, the same source as the Streamlit sections.
-  There is no JS test runner; `geo.js` is pure so it can be exercised from a browser console.
+  (defaults to the Richmond demo route), `?source=sim` (autoplays the simulated walker),
+  `?source=gps` (opens on a route overview with a
+  Start button, for phone links) and `?debug` (exposes `window.__nav`). It defaults to the
+  simulated walker, which is what demos on a laptop should use. Text shown in its info
+  bar comes from `summary.py`, the same source as the Streamlit sections.
+- Real GPS needs HTTPS (localhost is exempt), so testing on a phone needs a tunnel or
+  hosting. Pure JS logic is tested by opening `/navigate/tests.html` (no Node here); the
+  map itself only renders in a *visible* browser tab, so headless/hidden panes stall on load.
 - `pyproject.toml` sets `pythonpath = ["src"]` for pytest, so tests import
   `gis_route_app` directly without an editable install.

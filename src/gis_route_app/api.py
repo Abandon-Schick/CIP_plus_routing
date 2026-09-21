@@ -11,7 +11,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
-from .models import RouteAnalysisResponse, RouteRequest
+from .gpx import load_static_route
+from .models import NavigationPlanRequest, RouteAnalysisResponse, RouteRequest
 from .navigation import NavigationPlan, build_navigation_plan
 from .routing import RoutingError
 from .service import get_cached_service, refresh_cached_service, run_background_refresh
@@ -72,11 +73,19 @@ def refresh_data() -> dict[str, str]:
 
 
 @app.post("/navigation-plan", response_model=NavigationPlan)
-def navigation_plan(payload: RouteRequest) -> NavigationPlan:
+def navigation_plan(payload: NavigationPlanRequest) -> NavigationPlan:
     """Route plus per-stretch colors and per-feature corridors/text for the live map."""
+    settings = get_settings()
     try:
-        service, _ = get_cached_service(get_settings())
-        result = service.analyze(payload)
+        service, _ = get_cached_service(settings)
+        if payload.route_id is not None:
+            try:
+                gpx_route = load_static_route(payload.route_id, settings.static_routes_dir)
+            except (FileNotFoundError, ValueError) as exc:
+                raise HTTPException(status_code=404, detail=f"Unknown route: {payload.route_id}") from exc
+            result = service.analyze_line(gpx_route.coordinates, payload.mode)
+        else:
+            result = service.analyze(RouteRequest(start=payload.start, end=payload.end, mode=payload.mode))
         return build_navigation_plan(result, service.analysis_engine)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=500, detail=f"Dataset file missing: {exc}") from exc

@@ -32,6 +32,10 @@ class Settings:
     cip_snapshot_path: str = "data/cip_snapshot.json"
     # Seconds; live datasets are re-fetched at most this often (see service.get_cached_service).
     data_refresh_interval_seconds: float = 24 * 60 * 60
+    # Where the Simulate / Go buttons send the user (the navigation page served by the API).
+    navigation_base_url: str = "http://localhost:8000/navigate/"
+    # Folder of bundled .gpx routes (file name = route id) that can be loaded instead of routing.
+    static_routes_dir: str = "data/routes"
 
 
 def get_settings() -> Settings:
@@ -69,4 +73,8 @@ def get_settings() -> Settings:
         data_refresh_interval_seconds=float(
             os.getenv("DATA_REFRESH_INTERVAL_SECONDS", str(24 * 60 * 60))
         ),
+        navigation_base_url=os.getenv(
+            "NAVIGATION_BASE_URL", "http://localhost:8000/navigate/"
+        ),
+        static_routes_dir=os.getenv("STATIC_ROUTES_DIR", "data/routes"),
     )

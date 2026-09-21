@@ -14,7 +14,8 @@ from .categorization import CipSnapshotStore
 from .config import Settings
 from .datasets import DatasetFeature, load_geojson_features
 from .models import RouteAnalysisResponse, RouteRequest
-from .routing import RoutingContext, build_routing_provider
+from .models import TravelMode
+from .routing import RoutingContext, build_routing_provider, route_from_coordinates
 
 _HIN_FLAG_FIELD = "HISN_2023"
 
@@ -128,6 +129,14 @@ class RouteIntersectionService:
             ),
         )
         route = provider.get_route(start=request.start, end=request.end, mode=request.mode)
+        intersections = self.analysis_engine.analyze_route(route.geojson)
+        return RouteAnalysisResponse(route=route, intersections=intersections)
+
+    def analyze_line(
+        self, coordinates: list[tuple[float, float]], mode: TravelMode
+    ) -> RouteAnalysisResponse:
+        """Analyze a route we were handed as a line (e.g. a GPX track), with no routing step."""
+        route = route_from_coordinates(coordinates, mode)
         intersections = self.analysis_engine.analyze_route(route.geojson)
         return RouteAnalysisResponse(route=route, intersections=intersections)
 

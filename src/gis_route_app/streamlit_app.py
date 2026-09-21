@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
+import threading
+import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode, urlparse
 
 import pandas as pd
 import pydeck as pdk
@@ -20,6 +23,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import substring, unary_union
 
 from gis_route_app.config import get_settings
+from gis_route_app.gpx import load_static_route
 from gis_route_app.models import (
     Coordinate,
     RouteAnalysisResponse,
@@ -92,25 +96,21 @@ def _build_bucket_percentage_series(
     When corridors overlap (e.g. a High Injury Network street that's also under
     construction), the higher-priority bucket in ``BUCKET_ORDER`` wins so the
     percentages sum to the total "may change" figure without double-counting.
+    Built from the same partition as the overlap bar and the map, so all three agree --
+    and so a route that retraces itself counts each pass of a stretch.
     """
     route_geom = shape(result.route.geojson["geometry"])
-    route_distance_m = geometry_length_m(route_geom)
-    if route_distance_m <= 0:
-        rows = [{"Bucket": label, "Percent": 0.0} for _, label in BUCKET_ORDER]
-        rows.append({"Bucket": "Unaffected", "Percent": 100.0})
-        return pd.DataFrame(rows)
-
     corridors = bucket_corridors(service.analysis_engine, route_geom)
-    remaining = route_geom
-    rows = []
-    for key, label in BUCKET_ORDER:
-        this_geom = remaining.intersection(corridors[key])
-        pct = (geometry_length_m(this_geom) / route_distance_m) * 100.0
-        rows.append({"Bucket": label, "Percent": max(pct, 0.0)})
-        remaining = remaining.difference(corridors[key])
+    pct_by_segment: dict[str, float] = {}
+    for block in _build_bucket_route_overlap_blocks(route_geom, corridors):
+        key = str(block["segment"])
+        pct_by_segment[key] = pct_by_segment.get(key, 0.0) + float(block["fraction"]) * 100.0
 
-    unaffected_pct = (geometry_length_m(remaining) / route_distance_m) * 100.0
-    rows.append({"Bucket": "Unaffected", "Percent": max(unaffected_pct, 0.0)})
+    rows = [
+        {"Bucket": label, "Percent": max(pct_by_segment.get(key, 0.0), 0.0)}
+        for key, label in BUCKET_ORDER
+    ]
+    rows.append({"Bucket": "Unaffected", "Percent": max(pct_by_segment.get("unaffected", 0.0), 0.0)})
     return pd.DataFrame(rows)
 
 
@@ -549,8 +549,12 @@ def _render_route_map(
         },
     ]
 
-    center_lon = (request.start.lon + request.end.lon) / 2.0
-    center_lat = (request.start.lat + request.end.lat) / 2.0
+    lons = [point[0] for path in paths for point in path]
+    lats = [point[1] for path in paths for point in path]
+    center_lon = (min(lons) + max(lons)) / 2.0
+    center_lat = (min(lats) + max(lats)) / 2.0
+    extent_deg = max(max(lons) - min(lons), max(lats) - min(lats))
+    map_zoom = 13 if extent_deg <= 0.08 else 12 if extent_deg <= 0.16 else 11
 
     bucket_geojson = _intersecting_bucket_geojson(service, result.intersections)
     layers: list[pdk.Layer] = []
@@ -597,7 +601,7 @@ def _render_route_map(
         initial_view_state=pdk.ViewState(
             latitude=center_lat,
             longitude=center_lon,
-            zoom=13,
+            zoom=map_zoom,
             pitch=0,
         ),
         layers=layers,
@@ -640,8 +644,132 @@ def _geocode_address(address: str, timeout_seconds: int) -> Coordinate:
         raise GeocodingError(f"Unexpected geocoding response for '{query}'.") from exc
 
 
+_ANALYSIS_KEY = "street_vision_analysis"
+_GPX_ROUTE_KEY = "street_vision_gpx_route_id"
+_GPX_PENDING_KEY = "street_vision_gpx_pending_analysis"
+_DEMO_GPX_ROUTE_ID = "war-on-cars-bike-tour"
+_GPX_DEMO_HELP = (
+    "Demo build: loads a bundled sample route (the War on Cars Bike Tour). "
+    "Uploading your own .gpx file comes later."
+)
+_API_START_TIMEOUT_S = 8.0
+
+
+def _navigation_url(
+    base_url: str, request: RouteRequest, source: str, route_id: str | None = None
+) -> str:
+    """Link to the navigation page for an analyzed route; ``source`` is "sim" or "gps"."""
+    route_params = (
+        {"route": route_id}
+        if route_id
+        else {
+            "start": f"{request.start.lon},{request.start.lat}",
+            "end": f"{request.end.lon},{request.end.lat}",
+        }
+    )
+    query = urlencode({**route_params, "mode": request.mode.value, "source": source})
+    return f"{base_url}?{query}"
+
+
+def _api_is_up(base_url: str) -> bool:
+    parsed = urlparse(base_url)
+    try:
+        return requests.get(f"{parsed.scheme}://{parsed.netloc}/health", timeout=1).ok
+    except requests.RequestException:
+        return False
+
+
+@st.cache_resource
+def _ensure_navigation_server(base_url: str) -> bool:
+    """Make sure the navigation page's API is reachable, starting it in-process if local.
+
+    Simulate / Go open a page served by the FastAPI app. For the local demo that would
+    mean running a second command, so start it in a background thread here instead --
+    which also shares this process's already-warmed HIN/CIP cache.
+    """
+    if _api_is_up(base_url):
+        return True
+    parsed = urlparse(base_url)
+    if parsed.hostname not in {"localhost", "127.0.0.1"}:
+        return False
+
+    import uvicorn
+
+    from gis_route_app.api import app as api_app
+
+    server = uvicorn.Server(
+        uvicorn.Config(api_app, host="127.0.0.1", port=parsed.port or 80, log_level="warning")
+    )
+    threading.Thread(target=server.run, daemon=True, name="street-vision-api").start()
+    deadline = time.monotonic() + _API_START_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _api_is_up(base_url):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _store_analysis(inputs: tuple, request: RouteRequest, result, **extra) -> None:
+    st.session_state[_ANALYSIS_KEY] = {
+        "inputs": inputs,
+        "request": request,
+        "result": result,
+        "used_fallback": False,
+        **extra,
+    }
+
+
+def _analyze_addresses(settings, start_address: str, end_address: str, mode: str) -> None:
+    """Geocode, route and analyze, keeping the outcome in session state (or showing why not)."""
+    used_fallback = False
+    try:
+        with st.spinner("Analyzing route and overlap details..."):
+            start_coord = _geocode_address(start_address, settings.request_timeout_seconds)
+            end_coord = _geocode_address(end_address, settings.request_timeout_seconds)
+            service, _ = get_cached_service(settings)
+            request = RouteRequest(start=start_coord, end=end_coord, mode=TravelMode(mode))
+            try:
+                result = service.analyze(request, routing_provider="ors")
+            except RoutingError:
+                result = service.analyze(request, routing_provider="mock")
+                used_fallback = True
+    except (GeocodingError, RoutingError, ValueError, FileNotFoundError) as exc:
+        st.session_state.pop(_ANALYSIS_KEY, None)
+        st.error(f"Could not analyze route: {exc}")
+        return
+    _store_analysis(
+        ("addresses", start_address, end_address, mode),
+        request,
+        result,
+        used_fallback=used_fallback,
+    )
+
+
+def _analyze_gpx(settings, route_id: str, mode: str) -> None:
+    """Analyze a bundled GPX route as-is (no geocoding or routing)."""
+    try:
+        with st.spinner("Analyzing route and overlap details..."):
+            gpx_route = load_static_route(route_id, settings.static_routes_dir)
+            service, _ = get_cached_service(settings)
+            result = service.analyze_line(gpx_route.coordinates, TravelMode(mode))
+    except (ValueError, FileNotFoundError) as exc:
+        st.session_state.pop(_ANALYSIS_KEY, None)
+        st.error(f"Could not analyze route: {exc}")
+        return
+    (start_lon, start_lat), (end_lon, end_lat) = gpx_route.coordinates[0], gpx_route.coordinates[-1]
+    request = RouteRequest(
+        start=Coordinate(lon=start_lon, lat=start_lat),
+        end=Coordinate(lon=end_lon, lat=end_lat),
+        mode=TravelMode(mode),
+    )
+    _store_analysis(
+        ("gpx", route_id, mode), request, result, route_id=route_id, route_name=gpx_route.name
+    )
+
+
 def _render_route_tab() -> None:
     settings = get_settings()
+    navigation_available = _ensure_navigation_server(settings.navigation_base_url)
     with st.expander("Set route", expanded=True):
         st.caption("Set start/end addresses and see what's changing along your route.")
 
@@ -649,21 +777,48 @@ def _render_route_tab() -> None:
             st.session_state["start_address_input"] = _DEFAULT_START_ADDRESS
         if "end_address_input" not in st.session_state:
             st.session_state["end_address_input"] = _DEFAULT_END_ADDRESS
+        if "travel_mode_input" not in st.session_state:
+            st.session_state["travel_mode_input"] = TravelMode.WALKING.value
 
-        if st.button("Reset addresses"):
-            st.session_state["start_address_input"] = _DEFAULT_START_ADDRESS
-            st.session_state["end_address_input"] = _DEFAULT_END_ADDRESS
+        gpx_route_id = st.session_state.get(_GPX_ROUTE_KEY)
+        # Set by the upload click, which reruns so the whole form redraws in GPX mode first.
+        load_gpx_now = st.session_state.pop(_GPX_PENDING_KEY, False)
+        top_row = st.container(horizontal=True)
+        if gpx_route_id is None:
+            if top_row.button("Reset addresses"):
+                st.session_state["start_address_input"] = _DEFAULT_START_ADDRESS
+                st.session_state["end_address_input"] = _DEFAULT_END_ADDRESS
+            if top_row.button("Upload a .GPX route", help=_GPX_DEMO_HELP):
+                try:
+                    demo_route = load_static_route(_DEMO_GPX_ROUTE_ID, settings.static_routes_dir)
+                except (ValueError, FileNotFoundError) as exc:
+                    st.error(f"Could not load the sample GPX route: {exc}")
+                else:
+                    st.session_state[_GPX_ROUTE_KEY] = _DEMO_GPX_ROUTE_ID
+                    st.session_state[_GPX_PENDING_KEY] = True
+                    if demo_route.mode is not None:
+                        st.session_state["travel_mode_input"] = demo_route.mode.value
+                    st.rerun()
+        elif top_row.button("Use addresses instead"):
+            st.session_state.pop(_GPX_ROUTE_KEY, None)
+            st.session_state.pop(_ANALYSIS_KEY, None)
+            st.rerun()
 
-        c1, c2 = st.columns(2)
-        with c1:
-            start_address = st.text_input("Start address", key="start_address_input")
-            mode = st.selectbox(
-                "Travel mode",
-                [m.value for m in TravelMode],
-                index=list(TravelMode).index(TravelMode.WALKING),
-            )
-        with c2:
-            end_address = st.text_input("End address", key="end_address_input")
+        mode_options = [m.value for m in TravelMode]
+        if gpx_route_id is None:
+            c1, c2 = st.columns(2)
+            with c1:
+                start_address = st.text_input("Start address", key="start_address_input")
+                mode = st.selectbox("Travel mode", mode_options, key="travel_mode_input")
+            with c2:
+                end_address = st.text_input("End address", key="end_address_input")
+            current_inputs = ("addresses", start_address, end_address, mode)
+        else:
+            gpx_route = load_static_route(gpx_route_id, settings.static_routes_dir)
+            st.markdown(f"**GPX route:** {gpx_route.name}")
+            st.caption(_GPX_DEMO_HELP)
+            mode = st.selectbox("Travel mode", mode_options, key="travel_mode_input")
+            current_inputs = ("gpx", gpx_route_id, mode)
 
         with st.expander("Settings", expanded=False):
             st.write("Current defaults loaded from environment:")
@@ -693,35 +848,53 @@ def _render_route_tab() -> None:
                 )
             )
 
-        submitted = st.button("Analyze route")
+        button_row = st.container(horizontal=True)
+        if button_row.button("Analyze") or load_gpx_now:
+            if gpx_route_id is None:
+                _analyze_addresses(settings, start_address, end_address, mode)
+            else:
+                _analyze_gpx(settings, gpx_route_id, mode)
 
-        if not submitted:
-            return
-
-    try:
-        with st.spinner("Analyzing route and overlap details..."):
-            start_coord = _geocode_address(start_address, settings.request_timeout_seconds)
-            end_coord = _geocode_address(end_address, settings.request_timeout_seconds)
-            service, _ = get_cached_service(settings)
-            request = RouteRequest(
-                start=start_coord,
-                end=end_coord,
-                mode=TravelMode(mode),
-            )
-            try:
-                result = service.analyze(request, routing_provider="ors")
-            except RoutingError:
-                result = service.analyze(request, routing_provider="mock")
-                st.warning(
-                    "Live routing wasn't available, so this route is an "
-                    "approximate straight line."
+        analysis = st.session_state.get(_ANALYSIS_KEY)
+        is_current = analysis is not None and analysis["inputs"] == current_inputs
+        if not navigation_available:
+            disabled_reason = "Navigation isn't available: the local API couldn't be started."
+        elif not is_current:
+            disabled_reason = "Analyze this route first."
+        else:
+            disabled_reason = None
+        for label, source in (("Simulate", "sim"), ("Go", "gps")):
+            button_row.link_button(
+                label,
+                _navigation_url(
+                    settings.navigation_base_url,
+                    analysis["request"],
+                    source,
+                    route_id=analysis.get("route_id"),
                 )
-    except (GeocodingError, RoutingError, ValueError, FileNotFoundError) as exc:
-        st.error(f"Could not analyze route: {exc}")
+                if is_current
+                else settings.navigation_base_url,
+                disabled=disabled_reason is not None,
+                help=disabled_reason,
+            )
+        if analysis is not None and not is_current:
+            st.caption("The route inputs changed. Analyze again to update the results.")
+
+    if analysis is None:
         return
+    _render_results(analysis, settings)
+
+
+def _render_results(analysis: dict, settings) -> None:
+    service, _ = get_cached_service(settings)
+    request: RouteRequest = analysis["request"]
+    result: RouteAnalysisResponse = analysis["result"]
+    mode = request.mode.value
+
+    if analysis["used_fallback"]:
+        st.warning("Live routing wasn't available, so this route is an approximate straight line.")
 
     route_km = result.route.distance_m / 1609.3
-    duration_min = result.route.duration_s / 60.0
     cip_details_frame = _build_cip_overlap_details_frame(result)
     hin_street_frame = _aggregate_hin_by_street(_build_hin_overlap_details_frame(result))
 
@@ -732,7 +905,8 @@ def _render_route_tab() -> None:
     year_suffix = f" by {latest_year}" if latest_year is not None else ""
 
     st.markdown(f"### {change_pct:.0f}% of your route may change{year_suffix}")
-    st.caption(f"{route_km:.2f} mile {mode} route")
+    route_name = analysis.get("route_name")
+    st.caption(f"{route_km:.2f} mile {mode} route" + (f" · {route_name}" if route_name else ""))
 
     _render_route_overlap_bar(route_geom=shape(result.route.geojson["geometry"]), service=service)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 from shapely.geometry import LineString
 
@@ -9,6 +11,7 @@ from gis_route_app.datasets import DatasetFeature
 from gis_route_app.models import (
     Coordinate,
     RouteAnalysisResponse,
+    RouteRequest,
     RouteResponse,
     SegmentIntersection,
     TravelMode,
@@ -22,6 +25,7 @@ from gis_route_app.streamlit_app import (
     _build_route_overlap_segments,
     _geocode_address,
     _latest_completion_year,
+    _navigation_url,
     _parse_completion_year,
 )
 
@@ -483,3 +487,48 @@ def test_build_bucket_percentage_series_high_risk_wins_over_cip_on_overlap() -> 
 
     assert pct["High risk"] == pytest.approx(100.0, abs=0.01)
     assert pct["Newly fixed"] == 0
+
+
+def test_navigation_url_carries_the_analyzed_route() -> None:
+    request = RouteRequest(
+        start=Coordinate(lon=-77.4376, lat=37.5394),
+        end=Coordinate(lon=-77.4488, lat=37.5246),
+        mode=TravelMode.WALKING,
+    )
+
+    url = _navigation_url("http://localhost:8000/navigate/", request, "sim")
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "http://localhost:8000/navigate/"
+    assert query == {
+        "start": ["-77.4376,37.5394"],
+        "end": ["-77.4488,37.5246"],
+        "mode": ["walking"],
+        "source": ["sim"],
+    }
+
+
+def test_bucket_percentages_count_every_pass_of_a_retraced_route_and_sum_to_100() -> None:
+    lat = 37.54
+    engine = SpatialAnalysisEngine(
+        hin_features=[
+            DatasetFeature(
+                feature_id="h1",
+                geometry=LineString([(-77.4385, lat), (-77.4355, lat)]),
+                properties={"HISN_2023": 1},
+            )
+        ],
+        cip_features=[],
+        proximity_buffer_m=20.0,
+    )
+    service = RouteIntersectionService(settings=Settings(routing_provider="mock"), analysis_engine=engine)
+    out_and_back = [(-77.440, lat), (-77.430, lat), (-77.440, lat)]
+
+    result = service.analyze_line(out_and_back, TravelMode.BIKING)
+    frame = _build_bucket_percentage_series(result, service)
+    pct = dict(zip(frame["Bucket"], frame["Percent"]))
+
+    # The ~265 m of high-risk street is ridden twice out of ~1.76 km total.
+    assert pct["High risk"] == pytest.approx(2 * 265 / 1760 * 100, rel=0.15)
+    assert frame["Percent"].sum() == pytest.approx(100.0)

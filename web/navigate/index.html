@@ -12,22 +12,39 @@
 
     <div id="status" role="status">Loading your route…</div>
 
-    <details id="simulator" hidden open>
-      <summary>Simulated location</summary>
-      <div class="sim-row">
-        <button id="sim-play" type="button" aria-label="Play">▶</button>
-        <input id="sim-progress" type="range" min="0" max="1000" value="0" aria-label="Position along route" />
+    <details id="location-panel" hidden open>
+      <summary>Location</summary>
+      <div class="segmented" role="group" aria-label="Location source">
+        <button id="source-sim" type="button" aria-pressed="true">Simulate</button>
+        <button id="source-gps" type="button" aria-pressed="false">My location</button>
       </div>
-      <label class="sim-row">
-        Speed
-        <select id="sim-speed">
-          <option value="1">1× (real pace)</option>
-          <option value="5" selected>5×</option>
-          <option value="15">15×</option>
-          <option value="40">40×</option>
-        </select>
-      </label>
+      <div id="sim-controls">
+        <div class="sim-row">
+          <button id="sim-play" type="button" aria-label="Play">▶</button>
+          <input id="sim-progress" type="range" min="0" max="1000" value="0" aria-label="Position along route" />
+        </div>
+        <label class="sim-row">
+          Speed
+          <select id="sim-speed">
+            <option value="1">1× (real pace)</option>
+            <option value="5">5×</option>
+            <option value="15">15×</option>
+            <option value="40">40×</option>
+            <option value="100">100×</option>
+          </select>
+        </label>
+      </div>
+      <p id="gps-status" hidden></p>
     </details>
+
+    <div id="start-overlay" hidden>
+      <div class="start-card">
+        <h1>Your route's future</h1>
+        <p>Street Vision follows you along the route and shows what's changing right where you are. Your location stays on this device.</p>
+        <button id="start-gps" type="button">Start navigation</button>
+        <button id="start-sim" type="button" class="link">Preview with a simulated walker</button>
+      </div>
+    </div>
 
     <button id="recenter" type="button" hidden>Re-center</button>
 

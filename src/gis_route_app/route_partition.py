@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
+
 from pyproj import Geod
 from shapely.geometry import GeometryCollection, LineString, MultiLineString, Point
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import substring
+from shapely.prepared import prep
 
 from .analysis import SpatialAnalysisEngine, union_dataset_corridors_wgs84
 from .summary import BUCKET_ORDER
@@ -77,24 +80,36 @@ def line_metric_overlap_intervals(
 
     Values are for ``shapely.ops.substring(..., normalized=True)`` (Shapely's native distance along
     the line). Do not mix with geodesic meters — use substring + `geometry_length_m` for lengths.
+
+    Measured one vertex-to-vertex segment at a time, so a route that retraces itself (a GPX
+    track out and back along the same road) is placed correctly on *both* passes; projecting
+    overlap pieces onto the whole line would put every pass at the first one's position.
     """
     if geometry_length_m(route_line) <= 0 or overlap_union.is_empty:
         return []
 
-    overlap_geom = route_line.intersection(overlap_union)
-    overlap_lines = extract_line_geometries(overlap_geom)
+    coords = list(route_line.coords)
+    cumulative = [0.0]
+    for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+        cumulative.append(cumulative[-1] + math.hypot(x1 - x0, y1 - y0))
+    total = cumulative[-1]
+    if total <= 0:
+        return []
+
+    prepared = prep(overlap_union)
     intervals: list[tuple[float, float]] = []
-    for overlap_line in overlap_lines:
-        coords = list(overlap_line.coords)
-        if len(coords) < 2:
+    for i, (start, end) in enumerate(zip(coords, coords[1:])):
+        segment = LineString([start, end])
+        if segment.length <= 0 or not prepared.intersects(segment):
             continue
-        start_norm = route_line.project(Point(coords[0]), normalized=True)
-        end_norm = route_line.project(Point(coords[-1]), normalized=True)
-        lo = max(0.0, min(start_norm, end_norm))
-        hi = min(1.0, max(start_norm, end_norm))
-        if hi <= lo:
-            continue
-        intervals.append((lo, hi))
+        for piece in extract_line_geometries(segment.intersection(overlap_union)):
+            piece_coords = list(piece.coords)
+            a = segment.project(Point(piece_coords[0]))
+            b = segment.project(Point(piece_coords[-1]))
+            lo, hi = min(a, b), max(a, b)
+            if hi <= lo:
+                continue
+            intervals.append(((cumulative[i] + lo) / total, (cumulative[i] + hi) / total))
     return merge_intervals(intervals)
 
 

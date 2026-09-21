@@ -161,3 +161,84 @@ def test_navigation_plan_endpoint(monkeypatch) -> None:
     assert [c["id"] for c in body["cards"]] == ["hin:Main St", "cip:c1", "cip:c2"]
     assert body["route"]["segments"]
     assert body["route"]["geometry"]["type"] == "LineString"
+
+
+_ROUTE_ID_SETTINGS = Settings(routing_provider="mock", static_routes_dir="data/routes")
+
+
+def _patch_api(monkeypatch, service) -> TestClient:
+    monkeypatch.setattr(api, "get_cached_service", lambda settings: (service, datetime.now(timezone.utc)))
+    monkeypatch.setattr(api, "get_settings", lambda: _ROUTE_ID_SETTINGS)
+    return TestClient(api.app)
+
+
+def test_navigation_plan_endpoint_serves_a_bundled_gpx_route_by_id(monkeypatch) -> None:
+    client = _patch_api(monkeypatch, _service())
+
+    response = client.post(
+        "/navigation-plan", json={"route_id": "war-on-cars-bike-tour", "mode": "biking"}
+    )
+
+    assert response.status_code == 200
+    route = response.json()["route"]
+    assert route["mode"] == "biking"
+    assert route["geometry"]["type"] == "LineString"
+    assert len(route["geometry"]["coordinates"]) > 100
+    assert route["distance_m"] > 10_000
+
+
+def test_navigation_plan_endpoint_404s_on_an_unknown_route_id(monkeypatch) -> None:
+    client = _patch_api(monkeypatch, _service())
+
+    response = client.post("/navigation-plan", json={"route_id": "nope", "mode": "biking"})
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"mode": "walking"},
+        {"mode": "walking", "start": {"lon": -77.44, "lat": 37.54}},
+        {
+            "mode": "walking",
+            "route_id": "war-on-cars-bike-tour",
+            "start": {"lon": -77.44, "lat": 37.54},
+            "end": {"lon": -77.43, "lat": 37.54},
+        },
+    ],
+)
+def test_navigation_plan_endpoint_needs_exactly_one_route_source(monkeypatch, body) -> None:
+    client = _patch_api(monkeypatch, _service())
+
+    assert client.post("/navigation-plan", json=body).status_code == 422
+
+
+def test_analyze_line_analyzes_a_given_line_without_routing() -> None:
+    service = _service()
+    coords = [(_START.lon, _START.lat), (-77.435, _LAT), (_END.lon, _END.lat)]
+
+    result = service.analyze_line(coords, TravelMode.BIKING)
+
+    assert result.route.mode == TravelMode.BIKING
+    assert result.route.distance_m == pytest.approx(880, rel=0.02)
+    assert result.route.geojson["properties"]["provider"] == "gpx"
+    assert {i.feature_id for i in result.intersections} >= {"h1", "c1"}
+
+
+def test_partition_places_a_retraced_route_correctly_on_both_passes() -> None:
+    from gis_route_app.route_partition import priority_spans_on_line
+
+    # Out along the same road and back again; the zone covers the same stretch on each pass.
+    route = LineString([(-77.440, _LAT), (-77.430, _LAT), (-77.440, _LAT)])
+    zone = box(-77.438, _LAT - 0.001, -77.436, _LAT + 0.001)
+
+    spans = priority_spans_on_line(route, [("high_risk", zone)])
+
+    assert [(round(lo, 2), round(hi, 2), tag) for lo, hi, tag in spans] == [
+        (0.0, 0.1, "unaffected"),
+        (0.1, 0.2, "high_risk"),
+        (0.2, 0.8, "unaffected"),
+        (0.8, 0.9, "high_risk"),
+        (0.9, 1.0, "unaffected"),
+    ]

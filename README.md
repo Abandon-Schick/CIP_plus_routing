@@ -11,10 +11,12 @@ The project includes:
 
 - a **FastAPI service** (`/analyze-route`, `/navigation-plan`)
 - a **CLI tool** (`gis-route-cli`)
-- a **Streamlit dashboard** (start/end route controls + overlap chart)
+- a **Streamlit dashboard** (start/end route controls, then **Analyze** for the overlap
+  summary, **Simulate** to watch the route in navigation mode, **Go** to navigate with GPS;
+  **Upload a .GPX route** loads a bundled sample GPX ride instead of routing between addresses)
 - a **navigation-mode page** (`/navigate/`, served by the API): a live map that follows
   a position along the route and shows what's changing where you are (currently driven
-  by a simulated walker; real GPS is the next step)
+  by a simulated walker or the device's real GPS, which snaps to the route)
 
 ## Architecture
 
@@ -81,7 +83,10 @@ curl http://localhost:8000/health
 
 Navigation mode demo (Richmond route, simulated walker): open
 <http://localhost:8000/navigate/> once the API is running. The first load fetches the
-live CIP data, so it can take a few seconds.
+live CIP data, so it can take a few seconds. The page starts with a simulated walker (play button);
+choose **My location** for real GPS, or open `/navigate/?source=gps` for a phone-style
+start screen. Browsers only share location over HTTPS (or `localhost`), so trying it on a
+phone needs an HTTPS tunnel or hosting. Logic tests: open `/navigate/tests.html`.
 
 Analyze route:
 

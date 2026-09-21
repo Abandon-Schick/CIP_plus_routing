@@ -33,20 +33,22 @@ class BaseRoutingProvider:
         raise NotImplementedError
 
 
+# Typical speeds, for estimating duration when a route carries no timing of its own.
+SPEED_MPS = {
+    TravelMode.DRIVING: 13.9,  # ~50 km/h
+    TravelMode.WALKING: 1.4,  # ~5 km/h
+    TravelMode.BIKING: 4.8,  # ~17 km/h
+}
+
+
 class MockRoutingProvider(BaseRoutingProvider):
     """Simple deterministic provider for local development and tests."""
-
-    _speed_mps = {
-        TravelMode.DRIVING: 13.9,  # ~50 km/h
-        TravelMode.WALKING: 1.4,  # ~5 km/h
-        TravelMode.BIKING: 4.8,  # ~17 km/h
-    }
 
     def get_route(self, start: Coordinate, end: Coordinate, mode: TravelMode) -> RouteResponse:
         line = LineString([(start.lon, start.lat), (end.lon, end.lat)])
         # Use geodesic line length so route distance aligns with overlap calculations.
         distance_m = _geodesic_line_length_m(line)
-        duration_s = distance_m / self._speed_mps[mode]
+        duration_s = distance_m / SPEED_MPS[mode]
 
         geojson = {
             "type": "Feature",
@@ -54,6 +56,24 @@ class MockRoutingProvider(BaseRoutingProvider):
             "properties": {"provider": "mock"},
         }
         return RouteResponse(mode=mode, distance_m=distance_m, duration_s=duration_s, geojson=geojson)
+
+
+def route_from_coordinates(
+    coordinates: list[tuple[float, float]], mode: TravelMode, provider: str = "gpx"
+) -> RouteResponse:
+    """A route given as a ready-made line (e.g. from a GPX file) instead of computed by a provider."""
+    line = LineString(coordinates)
+    distance_m = _geodesic_line_length_m(line)
+    return RouteResponse(
+        mode=mode,
+        distance_m=distance_m,
+        duration_s=distance_m / SPEED_MPS[mode],
+        geojson={
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": list(line.coords)},
+            "properties": {"provider": provider},
+        },
+    )
 
 
 def _geodesic_line_length_m(line: LineString) -> float:
