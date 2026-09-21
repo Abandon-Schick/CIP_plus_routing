@@ -975,7 +975,7 @@ def _render_route_tab() -> None:
 
 def main() -> None:
     """Run Streamlit dashboard."""
-    st.set_page_config(page_title="Roadway Repairs Along Route", layout="wide")
+    st.set_page_config(page_title="Street Vision", layout="wide")
     st.title("Street Vision: Your route's future")
 
     _render_route_tab()
